@@ -28,3 +28,86 @@ class User(AbstractUser):
 
     def __str__(self):
         return self.username
+
+
+class Wallet(models.Model):
+    CURRENCY_CHOICES = [("MWK", "MWK"), ("USDT", "USDT")]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="wallets")
+    currency = models.CharField(max_length=10, choices=CURRENCY_CHOICES)
+    blnk_balance_id = models.CharField(max_length=100)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("user", "currency")
+
+    def __str__(self):
+        return f"{self.user.username} — {self.currency}"
+
+
+class Transaction(models.Model):
+    TX_TYPE_CHOICES = [
+        ("Buy", "Buy"),
+        ("Sell", "Sell"),
+    ]
+    TX_STATUS_CHOICES = [
+        ("Completed", "Completed"),
+        ("Pending", "Pending"),
+        ("Cancelled", "Cancelled"),
+        ("Disputed", "Disputed"),
+    ]
+    METHOD_CHOICES = [
+        ("Airtel Money", "Airtel Money"),
+        ("TNM Mpamba", "TNM Mpamba"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="transactions")
+    type = models.CharField(max_length=10, choices=TX_TYPE_CHOICES)
+    amount_usdt = models.DecimalField(max_digits=18, decimal_places=6)
+    amount_mwk = models.DecimalField(max_digits=18, decimal_places=2)
+    rate = models.DecimalField(max_digits=10, decimal_places=2)
+    fee = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    status = models.CharField(max_length=10, choices=TX_STATUS_CHOICES, default="Pending")
+    method = models.CharField(max_length=20, choices=METHOD_CHOICES)
+    phone = models.CharField(max_length=20)
+    reference = models.CharField(max_length=50, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.type} {self.amount_usdt} USDT — {self.reference}"
+
+
+class PlatformAccount(models.Model):
+    """Singleton-style row holding the platform's own Blnk balance IDs."""
+    ledger_id = models.CharField(max_length=100)
+    mwk_float_balance_id = models.CharField(max_length=100)
+    usdt_float_balance_id = models.CharField(max_length=100)
+    mwk_external_contra_id = models.CharField(max_length=100)
+    usdt_external_contra_id = models.CharField(max_length=100)  # represents USDT in/out via the blockchain
+
+    class Meta:
+        verbose_name = "Platform Account"
+        verbose_name_plural = "Platform Account"
+
+    def __str__(self):
+        return f"Platform Account (ledger: {self.ledger_id})"
+
+
+class Rate(models.Model):
+    buy_rate = models.DecimalField(max_digits=10, decimal_places=2, help_text="MWK charged per 1 USDT bought")
+    sell_rate = models.DecimalField(max_digits=10, decimal_places=2, help_text="MWK paid per 1 USDT sold")
+    buy_fee_percent = models.DecimalField(max_digits=5, decimal_places=2, default=1.0)
+    sell_fee_percent = models.DecimalField(max_digits=5, decimal_places=2, default=1.0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    @classmethod
+    def current(cls):
+        return cls.objects.latest("updated_at")
+
+    def __str__(self):
+        return f"Buy: {self.buy_rate} / Sell: {self.sell_rate}"

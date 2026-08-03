@@ -26,3 +26,29 @@ class BlnkClient:
         )
         resp.raise_for_status()
         return resp.json()
+
+    def create_transaction(
+        self,
+        amount: int,
+        currency: str,
+        precision: int,
+        reference: str,
+        source: str,
+        destination: str,
+        description: str = "",
+    ):
+        resp = requests.post(
+            f"{self.base_url}/transactions",
+            json={
+                "amount": amount,
+                "currency": currency,
+                "precision": precision,
+                "reference": reference,
+                "source": source,
+                "destination": destination,
+                "description": description,
+            },
+            headers=self.headers,
+        )
+        resp.raise_for_status()
+        return resp.json()

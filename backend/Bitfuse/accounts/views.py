@@ -1,10 +1,11 @@
 from django.contrib.auth import get_user_model
-from rest_framework import generics, permissions
+from rest_framework import generics, permissions, serializers
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .serializers import RegisterSerializer, UserSerializer
+from .models import Transaction, Wallet
+from .serializers import RegisterSerializer, TransactionSerializer, UserSerializer
 
 User = get_user_model()
 
@@ -43,3 +44,39 @@ class MeView(APIView):
 
     def get(self, request):
         return Response(UserSerializer(request.user).data)
+
+
+class WalletBalanceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Wallet
+        fields = ["currency", "blnk_balance_id", "created_at"]
+
+
+class WalletBalanceView(APIView):
+    """
+    GET /api/v1/auth/wallets/
+    Returns MWK and USDT wallet balances for the authenticated user.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        wallets = Wallet.objects.filter(user=request.user)
+        data = {}
+        for w in wallets:
+            data[w.currency.lower()] = {
+                "blnk_balance_id": w.blnk_balance_id,
+                "created_at": w.created_at.isoformat(),
+            }
+        return Response(data)
+
+
+class TransactionListView(generics.ListAPIView):
+    """
+    GET /api/v1/transactions/
+    Returns the transaction history for the authenticated user.
+    """
+    serializer_class = TransactionSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return Transaction.objects.filter(user=self.request.user)

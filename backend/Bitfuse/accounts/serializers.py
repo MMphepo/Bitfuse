@@ -2,6 +2,8 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
 
+from .models import Transaction
+
 User = get_user_model()
 
 
@@ -42,4 +44,22 @@ class UserSerializer(serializers.ModelSerializer):
             "verification_status",
             "email_verified",
             "phone_verified",
+        ]
+
+
+class TransactionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Transaction
+        fields = [
+            "id",
+            "type",
+            "amount_usdt",
+            "amount_mwk",
+            "rate",
+            "fee",
+            "status",
+            "method",
+            "phone",
+            "reference",
+            "created_at",
         ]
