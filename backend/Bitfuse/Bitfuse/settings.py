@@ -13,7 +13,6 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 from pathlib import Path
 
 from decouple import Config, RepositoryEnv
-import dj_database_url
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -45,7 +44,10 @@ INSTALLED_APPS = [
     "rest_framework",
     "rest_framework_simplejwt",
     "corsheaders",
+    "storages",
     "accounts",
+    "kyc",
+    "orders",
 ]
 
 MIDDLEWARE = [
@@ -83,7 +85,10 @@ WSGI_APPLICATION = "Bitfuse.wsgi.application"
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
 DATABASES = {
-    "default": dj_database_url.parse(config("DATABASE_URL"))
+    "default": {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": BASE_DIR / "db.sqlite3",
+    }
 }
 
 
@@ -116,9 +121,57 @@ REST_FRAMEWORK = {
 BLNK_BASE_URL = config("BLNK_BASE_URL")
 BLNK_SECRET_KEY = config("BLNK_SECRET_KEY", default="")
 
+CURRENCY_PRECISION = {
+    "MWK": 100,     # 2 decimal places
+    "USDT": 1_000_000,  # 6 decimal places
+}
+
 CORS_ALLOW_ALL_ORIGINS = True
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+
+# File storage (MinIO / S3-compatible or fallback to local)
+# https://django-storages.readthedocs.io/en/latest/backends/amazon-S3.html
+
+import os
+
+# Check if we should use S3 or fallback to local storage
+USE_S3 = config("USE_S3", default=False, cast=bool)
+
+if USE_S3:
+    STORAGES = {
+        "default": {
+            "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+    
+    AWS_ACCESS_KEY_ID = config("AWS_ACCESS_KEY_ID")
+    AWS_SECRET_ACCESS_KEY = config("AWS_SECRET_ACCESS_KEY")
+    AWS_STORAGE_BUCKET_NAME = config("AWS_STORAGE_BUCKET_NAME")
+    AWS_S3_ENDPOINT_URL = config("AWS_S3_ENDPOINT_URL")
+    AWS_S3_FILE_OVERWRITE = False
+else:
+    # Use local file storage for development
+    STORAGES = {
+        "default": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+            "OPTIONS": {
+                "location": os.path.join(BASE_DIR, "media"),
+            },
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+    
+    MEDIA_URL = "/media/"
+    MEDIA_ROOT = os.path.join(BASE_DIR, "media")
+AWS_DEFAULT_ACL = None
+AWS_S3_ADDRESSING_STYLE = "path"  # needed for MinIO
 
 
 # Internationalization

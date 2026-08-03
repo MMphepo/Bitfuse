@@ -52,3 +52,15 @@ class BlnkClient:
         )
         resp.raise_for_status()
         return resp.json()
+
+    def get_balance(self, balance_id: str):
+        """Fetch a balance's current numeric value from Blnk.
+
+        Returns dict with keys: balance_id, balance, credit_balance, debit_balance, currency.
+        """
+        resp = requests.get(
+            f"{self.base_url}/balances/{balance_id}",
+            headers=self.headers,
+        )
+        resp.raise_for_status()
+        return resp.json()

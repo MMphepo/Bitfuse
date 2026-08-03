@@ -55,19 +55,18 @@ class WalletBalanceSerializer(serializers.ModelSerializer):
 class WalletBalanceView(APIView):
     """
     GET /api/v1/auth/wallets/
-    Returns MWK and USDT wallet balances for the authenticated user.
+    Returns real numeric MWK and USDT wallet balances for the authenticated user.
     """
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        wallets = Wallet.objects.filter(user=request.user)
-        data = {}
-        for w in wallets:
-            data[w.currency.lower()] = {
-                "blnk_balance_id": w.blnk_balance_id,
-                "created_at": w.created_at.isoformat(),
-            }
-        return Response(data)
+        from accounts.services import fetch_wallet_balance
+
+        balances = fetch_wallet_balance(request.user)
+        return Response({
+            "mwk": float(balances["MWK"]),
+            "usdt": float(balances["USDT"]),
+        })
 
 
 class TransactionListView(generics.ListAPIView):

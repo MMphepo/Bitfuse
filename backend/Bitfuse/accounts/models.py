@@ -25,6 +25,7 @@ class User(AbstractUser):
     )
 
     blnk_wallet_balance_id = models.CharField(max_length=100, blank=True, null=True)
+    blnk_ledger_id = models.CharField(max_length=100, blank=True, null=True)
 
     def __str__(self):
         return self.username
@@ -89,6 +90,7 @@ class PlatformAccount(models.Model):
     usdt_float_balance_id = models.CharField(max_length=100)
     mwk_external_contra_id = models.CharField(max_length=100)
     usdt_external_contra_id = models.CharField(max_length=100)  # represents USDT in/out via the blockchain
+    usdt_frozen_balance_id = models.CharField(max_length=100, blank=True, default="")  # escrow for locked sell USDT
 
     class Meta:
         verbose_name = "Platform Account"
@@ -107,7 +109,16 @@ class Rate(models.Model):
 
     @classmethod
     def current(cls):
-        return cls.objects.latest("updated_at")
+        """Return the latest rate, or a safe default (buy 4220 / sell 4050, fee 1%) if none exist."""
+        try:
+            return cls.objects.latest("updated_at")
+        except cls.DoesNotExist:
+            return cls(
+                buy_rate="4220.00",
+                sell_rate="4050.00",
+                buy_fee_percent="1.00",
+                sell_fee_percent="1.00",
+            )
 
     def __str__(self):
         return f"Buy: {self.buy_rate} / Sell: {self.sell_rate}"

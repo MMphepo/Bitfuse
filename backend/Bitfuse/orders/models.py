@@ -21,6 +21,10 @@ class Order(models.Model):
     usdt_amount = models.DecimalField(max_digits=14, decimal_places=6)
     rate = models.DecimalField(max_digits=10, decimal_places=2)
     fee_percent = models.DecimalField(max_digits=5, decimal_places=2)
+    fee_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+
+    payment_method = models.CharField(max_length=30, blank=True, default="")
+    phone = models.CharField(max_length=30, blank=True, default="")
 
     status = models.CharField(max_length=20, choices=STATUS, default="awaiting_payment")
     blnk_transaction_refs = models.JSONField(default=list, blank=True)
