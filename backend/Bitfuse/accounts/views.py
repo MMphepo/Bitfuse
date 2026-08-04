@@ -2,12 +2,37 @@ from django.contrib.auth import get_user_model
 from rest_framework import generics, permissions, serializers
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import Transaction, Wallet
 from .serializers import RegisterSerializer, TransactionSerializer, UserSerializer
 
 User = get_user_model()
+
+
+class LoginView(TokenObtainPairView):
+    """POST /api/v1/auth/login/
+    Debug-instrumented simple-jwt token obtain view.
+    """
+
+    def post(self, request, *args, **kwargs):
+        print("[login] request.data:", request.data)
+        serializer = self.get_serializer(data=request.data)
+        print("[login] serializer initialized")
+        is_valid = serializer.is_valid()
+        print("[login] serializer.is_valid():", is_valid)
+        print("[login] serializer.errors:", serializer.errors)
+
+        if not is_valid:
+            print("[login] returning validation errors")
+            return Response(serializer.errors, status=400)
+
+        print("[login] credentials valid, producing tokens...")
+        response = super().post(request, *args, **kwargs)
+        print("[login] response status:", response.status_code)
+        print("[login] response data keys:", list(response.data.keys()) if hasattr(response, "data") else "n/a")
+        return response
 
 
 class RegisterView(generics.CreateAPIView):
