@@ -16,18 +16,18 @@ from decouple import Config, RepositoryEnv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
-ENV_FILE = BASE_DIR.parent / ".env"
-config = Config(RepositoryEnv(ENV_FILE))
+
+
 
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = config("SECRET_KEY", default="change-me-later")
+SECRET_KEY = Config("SECRET_KEY", default="change-me-later")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = config("DEBUG", default=True, cast=bool)
+DEBUG = Config("DEBUG", default=True, cast=bool)
 
 ALLOWED_HOSTS = ["*"]
 
@@ -118,8 +118,8 @@ REST_FRAMEWORK = {
     ],
 }
 
-BLNK_BASE_URL = config("BLNK_BASE_URL")
-BLNK_SECRET_KEY = config("BLNK_SECRET_KEY", default="")
+BLNK_BASE_URL = Config("BLNK_BASE_URL")
+BLNK_SECRET_KEY = Config("BLNK_SECRET_KEY", default="")
 
 CURRENCY_PRECISION = {
     "MWK": 100,     # 2 decimal places
@@ -137,7 +137,7 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 import os
 
 # Check if we should use S3 or fallback to local storage
-USE_S3 = config("USE_S3", default=False, cast=bool)
+USE_S3 = Config("USE_S3", default=False, cast=bool)
 
 if USE_S3:
     STORAGES = {
@@ -149,10 +149,10 @@ if USE_S3:
         },
     }
     
-    AWS_ACCESS_KEY_ID = config("AWS_ACCESS_KEY_ID")
-    AWS_SECRET_ACCESS_KEY = config("AWS_SECRET_ACCESS_KEY")
-    AWS_STORAGE_BUCKET_NAME = config("AWS_STORAGE_BUCKET_NAME")
-    AWS_S3_ENDPOINT_URL = config("AWS_S3_ENDPOINT_URL")
+    AWS_ACCESS_KEY_ID = Config("AWS_ACCESS_KEY_ID")
+    AWS_SECRET_ACCESS_KEY = Config("AWS_SECRET_ACCESS_KEY")
+    AWS_STORAGE_BUCKET_NAME = Config("AWS_STORAGE_BUCKET_NAME")
+    AWS_S3_ENDPOINT_URL = Config("AWS_S3_ENDPOINT_URL")
     AWS_S3_FILE_OVERWRITE = False
 else:
     # Use local file storage for development
