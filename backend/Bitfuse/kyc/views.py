@@ -1,10 +1,16 @@
+from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework import generics, permissions, status
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import KYCSubmission
-from .serializers import KYCSubmissionSerializer, KYCUploadSerializer
+from .serializers import (
+    KYCReviewSerializer,
+    KYCSubmissionSerializer,
+    KYCUploadSerializer,
+)
 
 
 class KYCSubmitView(generics.CreateAPIView):
@@ -104,3 +110,48 @@ class KYCStatusView(APIView):
             status=status.HTTP_200_OK,
         )
 
+
+class KYCAdminReviewView(APIView):
+    """
+    POST /api/v1/kyc/admin/<submission_id>/review/
+    Admin-only. Approves or rejects a pending KYC submission.
+
+    Body: {"status": "approved"} or {"status": "rejected", "rejection_reason": "..."}
+    Syncs the linked user's verification_status to 'verified'/'rejected'.
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def post(self, request, submission_id):
+        submission = get_object_or_404(KYCSubmission, id=submission_id)
+
+        if submission.status != "pending":
+            return Response(
+                {"detail": "Only pending KYC submissions can be reviewed."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = KYCReviewSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        new_status = data["status"]
+        submission.status = new_status
+        submission.reviewed_by = request.user
+        submission.reviewed_at = timezone.now()
+
+        if new_status == "approved":
+            submission.rejection_reason = ""
+            submission.user.verification_status = "verified"
+        else:
+            submission.rejection_reason = data.get("rejection_reason", "")
+            submission.user.verification_status = "rejected"
+
+        submission.user.save(update_fields=["verification_status"])
+        submission.save(update_fields=[
+            "status", "rejection_reason", "reviewed_at", "reviewed_by",
+        ])
+
+        return Response(
+            KYCSubmissionSerializer(submission).data,
+            status=status.HTTP_200_OK,
+        )

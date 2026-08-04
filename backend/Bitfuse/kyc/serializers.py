@@ -21,6 +21,24 @@ class KYCSubmissionSerializer(serializers.ModelSerializer):
         ]
 
 
+class KYCReviewSerializer(serializers.Serializer):
+    """Serializer for admin review of a KYC submission (approve/reject)."""
+
+    status = serializers.ChoiceField(choices=["approved", "rejected"])
+    rejection_reason = serializers.CharField(
+        required=False, allow_blank=True, max_length=255
+    )
+
+    def validate(self, attrs):
+        status_ = attrs.get("status")
+        reason = attrs.get("rejection_reason", "")
+        if status_ == "rejected" and not reason.strip():
+            raise serializers.ValidationError(
+                {"rejection_reason": "A rejection reason is required when rejecting a KYC submission."}
+            )
+        return attrs
+
+
 class KYCUploadSerializer(serializers.ModelSerializer):
     class Meta:
         model = KYCSubmission

@@ -190,4 +190,9 @@ if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
     Write-Host '  pnpm install'
     Write-Host '  pnpm run dev'
 } else {
-    $fr
+    $frontendCommand = 'cd "' + $frontendPath + '"; pnpm install; pnpm run dev'
+    Start-Process powershell -ArgumentList '-NoExit', '-Command', $frontendCommand
+}
+
+Write-Log 'All startup commands have been issued.'
+Write-Host 'If the frontend or backend windows did not open, run the commands manually as shown above.'
