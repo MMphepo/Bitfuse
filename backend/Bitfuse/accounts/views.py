@@ -85,13 +85,23 @@ class WalletBalanceView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
+        print("[wallets] GET /api/v1/auth/wallets/ called")
+        print("[wallets] authenticated user:", request.user.id, request.user.username)
+        print("[wallets] user.blnk_ledger_id:", getattr(request.user, "blnk_ledger_id", None))
+
         from accounts.services import fetch_wallet_balance
 
+        print("[wallets] calling fetch_wallet_balance...")
         balances = fetch_wallet_balance(request.user)
-        return Response({
+        print("[wallets] raw balances:", balances)
+        print("[wallets] MWK:", balances.get("MWK"), "| USDT:", balances.get("USDT"))
+
+        response_data = {
             "mwk": float(balances["MWK"]),
             "usdt": float(balances["USDT"]),
-        })
+        }
+        print("[wallets] response data:", response_data)
+        return Response(response_data)
 
 
 class TransactionListView(generics.ListAPIView):
