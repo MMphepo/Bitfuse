@@ -30,7 +30,7 @@ class CreateBuyOrderSerializer(serializers.Serializer):
 
     def create(self, validated_data):
         user = self.context["request"].user
-        usdt_amount = validated_data["amount_usdt"]
+        usdt_amount = Decimal(validated_data["amount_usdt"])
         mwk_total, fee_amount, rate, fee_percent = price_buy_order(usdt_amount)
 
         return Order.objects.create(
@@ -73,7 +73,7 @@ class CreateSellOrderSerializer(serializers.Serializer):
 
     def create(self, validated_data):
         user = self.context["request"].user
-        usdt_amount = validated_data["amount_usdt"]
+        usdt_amount = Decimal(validated_data["amount_usdt"])
         mwk_net, fee_amount, rate, fee_percent = price_sell_order(usdt_amount)
 
         order = Order.objects.create(
@@ -103,4 +103,3 @@ class OrderSerializer(serializers.ModelSerializer):
             "rate", "fee_percent", "fee_amount", "payment_method", "phone",
             "status", "created_at", "completed_at",
         ]
-

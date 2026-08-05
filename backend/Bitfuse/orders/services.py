@@ -26,6 +26,19 @@ def generate_reference():
     return "BF-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
 
 
+def _to_decimal(value) -> Decimal:
+    """Robustly convert int/float/str/Decimal/None to Decimal.
+
+    Prevents "can't multiply sequence by non-int" type errors when a client
+    sends an amount as a string or when DRF passes through a raw value.
+    """
+    if value is None:
+        return Decimal("0")
+    if isinstance(value, Decimal):
+        return value
+    return Decimal(str(value))
+
+
 def _current_rate() -> Rate:
     """Return the live Rate row with safe defaults (buy 4220 / sell 4050, fee 1%)."""
     return Rate.current()
@@ -37,8 +50,8 @@ def price_buy_order(usdt_amount: Decimal):
     Returns (mwk_total_payable, fee_amount, rate, fee_percent).
     mwk_total_payable = usdt * buy_rate (fee included in displayed total).
     """
-    usdt_amount = Decimal(str(usdt_amount))
-    
+    usdt_amount = _to_decimal(usdt_amount)
+
     rate = _current_rate()
     mwk_amount = usdt_amount * rate.buy_rate
     fee_amount = (mwk_amount * rate.buy_fee_percent / Decimal(100)).quantize(Decimal("0.01"))
@@ -56,8 +69,8 @@ def price_sell_order(usdt_amount: Decimal):
 
     Returns (mwk_net_payout, fee_amount, rate, fee_percent).
     """
-    usdt_amount = Decimal(str(usdt_amount))
-    
+    usdt_amount = _to_decimal(usdt_amount)
+
     rate = _current_rate()
     mwk_gross = usdt_amount * rate.sell_rate
     fee_amount = (mwk_gross * rate.sell_fee_percent / Decimal(100)).quantize(Decimal("0.01"))
@@ -206,4 +219,3 @@ def complete_sell_order(order):
     order.save()
 
     _write_history(order, order.payment_method or "Airtel Money", order.phone or "", order.fee_amount)
-
