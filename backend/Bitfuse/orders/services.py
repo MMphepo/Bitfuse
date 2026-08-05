@@ -37,6 +37,8 @@ def price_buy_order(usdt_amount: Decimal):
     Returns (mwk_total_payable, fee_amount, rate, fee_percent).
     mwk_total_payable = usdt * buy_rate (fee included in displayed total).
     """
+    usdt_amount = Decimal(str(usdt_amount))
+    
     rate = _current_rate()
     mwk_amount = usdt_amount * rate.buy_rate
     fee_amount = (mwk_amount * rate.buy_fee_percent / Decimal(100)).quantize(Decimal("0.01"))
@@ -54,6 +56,8 @@ def price_sell_order(usdt_amount: Decimal):
 
     Returns (mwk_net_payout, fee_amount, rate, fee_percent).
     """
+    usdt_amount = Decimal(str(usdt_amount))
+    
     rate = _current_rate()
     mwk_gross = usdt_amount * rate.sell_rate
     fee_amount = (mwk_gross * rate.sell_fee_percent / Decimal(100)).quantize(Decimal("0.01"))
