@@ -19,6 +19,12 @@ class CreateBuyOrderView(generics.CreateAPIView):
     serializer_class = CreateBuyOrderSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        order = serializer.save()
+        return Response(OrderSerializer(order).data, status=status.HTTP_201_CREATED)
+
     def post(self, request, *args, **kwargs):
         _require_verified_kyc(request.user)
         return super().post(request, *args, **kwargs)
@@ -27,6 +33,12 @@ class CreateBuyOrderView(generics.CreateAPIView):
 class CreateSellOrderView(generics.CreateAPIView):
     serializer_class = CreateSellOrderSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        order = serializer.save()
+        return Response(OrderSerializer(order).data, status=status.HTTP_201_CREATED)
 
     def post(self, request, *args, **kwargs):
         _require_verified_kyc(request.user)
