@@ -44,7 +44,7 @@ def _current_rate() -> Rate:
     return Rate.current()
 
 
-def price_buy_order(usdt_amount: Decimal):
+def price_buy_order(usdt_amount):
     """Calculate MWK payable for a buy order given the USDT amount.
 
     Returns (mwk_total_payable, fee_amount, rate, fee_percent).
@@ -53,18 +53,20 @@ def price_buy_order(usdt_amount: Decimal):
     usdt_amount = _to_decimal(usdt_amount)
 
     rate = _current_rate()
-    mwk_amount = usdt_amount * rate.buy_rate
-    fee_amount = (mwk_amount * rate.buy_fee_percent / Decimal(100)).quantize(Decimal("0.01"))
+    buy_rate = _to_decimal(rate.buy_rate)
+    buy_fee_percent = _to_decimal(rate.buy_fee_percent)
+    mwk_amount = usdt_amount * buy_rate
+    fee_amount = (mwk_amount * buy_fee_percent / Decimal(100)).quantize(Decimal("0.01"))
     total_payable = mwk_amount + fee_amount
     return (
         total_payable.quantize(Decimal("0.01")),
         fee_amount,
-        rate.buy_rate,
-        rate.buy_fee_percent,
+        buy_rate,
+        buy_fee_percent,
     )
 
 
-def price_sell_order(usdt_amount: Decimal):
+def price_sell_order(usdt_amount):
     """Calculate MWK net payout for a sell order given the USDT amount.
 
     Returns (mwk_net_payout, fee_amount, rate, fee_percent).
@@ -72,14 +74,16 @@ def price_sell_order(usdt_amount: Decimal):
     usdt_amount = _to_decimal(usdt_amount)
 
     rate = _current_rate()
-    mwk_gross = usdt_amount * rate.sell_rate
-    fee_amount = (mwk_gross * rate.sell_fee_percent / Decimal(100)).quantize(Decimal("0.01"))
+    sell_rate = _to_decimal(rate.sell_rate)
+    sell_fee_percent = _to_decimal(rate.sell_fee_percent)
+    mwk_gross = usdt_amount * sell_rate
+    fee_amount = (mwk_gross * sell_fee_percent / Decimal(100)).quantize(Decimal("0.01"))
     net_payout = mwk_gross - fee_amount
     return (
         net_payout.quantize(Decimal("0.01")),
         fee_amount,
-        rate.sell_rate,
-        rate.sell_fee_percent,
+        sell_rate,
+        sell_fee_percent,
     )
 
 

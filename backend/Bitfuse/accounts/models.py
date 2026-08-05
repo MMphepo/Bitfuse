@@ -1,4 +1,5 @@
 import uuid
+from decimal import Decimal
 
 from django.contrib.auth.models import AbstractUser
 from django.db import models
@@ -114,10 +115,10 @@ class Rate(models.Model):
             return cls.objects.latest("updated_at")
         except cls.DoesNotExist:
             return cls(
-                buy_rate="4220.00",
-                sell_rate="4050.00",
-                buy_fee_percent="1.00",
-                sell_fee_percent="1.00",
+                buy_rate=Decimal("4220.00"),
+                sell_rate=Decimal("4050.00"),
+                buy_fee_percent=Decimal("1.00"),
+                sell_fee_percent=Decimal("1.00"),
             )
 
     def __str__(self):
