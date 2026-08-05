@@ -6,7 +6,13 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import Transaction, Wallet
-from .serializers import RegisterSerializer, TransactionSerializer, UserSerializer
+from .serializers import (
+    OrderHistorySerializer,
+    RegisterSerializer,
+    TransactionSerializer,
+    UserSerializer,
+)
+from orders.models import Order
 
 User = get_user_model()
 
@@ -104,13 +110,34 @@ class WalletBalanceView(APIView):
         return Response(response_data)
 
 
-class TransactionListView(generics.ListAPIView):
+class TransactionListView(APIView):
     """
     GET /api/v1/transactions/
     Returns the transaction history for the authenticated user.
+
+    Combines the user's immutable Transaction records with their live Order
+    records (every buy/sell the user has placed), so the history page reflects
+    the actual activity of the logged-in user.
     """
-    serializer_class = TransactionSerializer
     permission_classes = [permissions.IsAuthenticated]
 
-    def get_queryset(self):
-        return Transaction.objects.filter(user=self.request.user)
+    def get(self, request):
+        user = request.user
+        print("[transactions] GET /api/v1/transactions/ for user:", user.id, user.username)
+
+        transactions = Transaction.objects.filter(user=user)
+        orders = Order.objects.filter(user=user)
+
+        print("[transactions] Transaction count:", transactions.count())
+        print("[transactions] Order count:", orders.count())
+
+        tx_data = TransactionSerializer(transactions, many=True).data
+        order_data = OrderHistorySerializer(orders, many=True).data
+
+        merged = list(tx_data) + list(order_data)
+        # Sort newest first by created_at (ISO timestamps sort lexicographically).
+        merged.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+
+        print("[transactions] merged history count:", len(merged))
+        print("[transactions] merged data:", merged)
+        return Response(merged)

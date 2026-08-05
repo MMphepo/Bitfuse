@@ -1,19 +1,28 @@
-# TODO — Fix Buy Order "can't multiply sequence by non-int" TypeError
+# TODO — Use airtel.png/tnm.png logos & fix KYC status
 
-## Root Cause
+## Task 3: Show the logged-in user's actual transaction history
 
-`price_buy_order()` received `usdt_amount` as a string when multiplied by the
-Decimal `rate.buy_rate`, causing `TypeError: can't multiply sequence by non-int
-of type 'decimal.Decimal'`. The deployed backend is also stale (older than local).
+- [x] Diagnose why history page was empty (backend returned no `Transaction` rows for the user)
+- [x] Add `OrderHistorySerializer` in `accounts/serializers.py` to map `Order` records into the same shape as `TransactionSerializer` (statuses mapped to frontend `TxStatus`)
+- [x] Update `TransactionListView` in `accounts/views.py` to merge the user's `Transaction` + `Order` records, sorted newest-first
+- [x] Add debug `console.log` + backend `print` instrumentation
+- [x] Fix frontend `getTransactions()` field mapping (snake_case -> camelCase) in `services/api.ts`
+- [x] Verify backend `manage.py check` passes
+- [x] Verify frontend `tsc --noEmit` passes
 
-## Steps
+## Task 1: Use airtel.png/tnm.png logos & remove descriptions
 
-- [x] 1.
-- [x] 2. Add `_to_decimal()` helper in `backend/Bitfuse/orders/services.py`.
-- [x] 3. Use `_to_decimal()` in `price_buy_order()` and `price_sell_order()`.
-- [x] 4. Coerce `amount_usdt` to Decimal in `orders/serializers.py` before pricing.
-- [x] 5. Python syntax compile passed for all edited files (exit 0).
-     `manage.py check` blocked locally by missing `dj_database_url` (env issue, unrelated to change).
-- [x] 6. Fix response serialization: override `create()` in both buy/sell views to
-     return `OrderSerializer(order).data` (resolves `'Order' object has no attribute 'amount_usdt'`).
-- [ ] 7. Commit and redeploy backend to Render (deployed image is stale).
+- [x] Explore repo and understand usage of AirtelLogo/TnmLogo
+- [x] Confirm plan with user
+- [x] Update `BrandIcons.tsx` to render `airtel.png` and `tnm.png` images (keep size/className props)
+- [x] Remove `description` for airtel and tnm payment methods in `buy.tsx`
+- [x] Remove `description` for airtel and tnm payout methods in `sell.tsx`
+- [x] Make description rendering conditional in buy.tsx and sell.tsx
+
+## Task 2: Fix dashboard KYC status showing "Verify Identity" after load
+
+- [x] Investigate dashboard KYC status rendering
+- [x] Identify status enum mismatch (KYC submission uses "approved" vs frontend "verified")
+- [x] Normalize `getKycStatus()` in `api.ts` to map "approved" -> "verified"
+- [x] Verify TypeScript passes
+      </content>

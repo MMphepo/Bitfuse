@@ -3,6 +3,7 @@ from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
 
 from .models import Transaction
+from orders.models import Order
 
 User = get_user_model()
 
@@ -63,3 +64,58 @@ class TransactionSerializer(serializers.ModelSerializer):
             "reference",
             "created_at",
         ]
+
+
+class OrderHistorySerializer(serializers.ModelSerializer):
+    """Serialize an Order into the same shape as TransactionSerializer.
+
+    Order statuses are mapped to the frontend TxStatus enum:
+      - awaiting_payment / awaiting_deposit -> Pending
+      - completed                           -> Completed
+      - cancelled                           -> Cancelled
+    """
+
+    type = serializers.SerializerMethodField()
+    status = serializers.SerializerMethodField()
+    method = serializers.SerializerMethodField()
+    amount_usdt = serializers.DecimalField(
+        source="usdt_amount", max_digits=18, decimal_places=6
+    )
+    amount_mwk = serializers.DecimalField(
+        source="mwk_amount", max_digits=18, decimal_places=2
+    )
+    fee = serializers.DecimalField(
+        source="fee_amount", max_digits=18, decimal_places=2
+    )
+    reference = serializers.CharField(source="reference_number")
+    created_at = serializers.DateTimeField()
+
+    class Meta:
+        model = Order
+        fields = [
+            "id",
+            "type",
+            "amount_usdt",
+            "amount_mwk",
+            "rate",
+            "fee",
+            "status",
+            "method",
+            "phone",
+            "reference",
+            "created_at",
+        ]
+
+    def get_type(self, obj):
+        return "Buy" if obj.order_type == "buy" else "Sell"
+
+    def get_status(self, obj):
+        if obj.status == "completed":
+            return "Completed"
+        if obj.status == "cancelled":
+            return "Cancelled"
+        return "Pending"
+
+    def get_method(self, obj):
+        method = (obj.payment_method or "").replace("_", " ").title()
+        return method or "Airtel Money"
