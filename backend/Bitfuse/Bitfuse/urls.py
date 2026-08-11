@@ -20,7 +20,7 @@ from django.urls import include, path
 from django.conf import settings
 from django.conf.urls.static import static
 
-from accounts.views import TransactionListView
+from accounts.views import NotificationListView, NotificationReadView, TransactionListView
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -28,6 +28,12 @@ urlpatterns = [
     path("api/v1/kyc/", include("kyc.urls")),
     path("api/v1/orders/", include("orders.urls")),
     path("api/v1/transactions/", TransactionListView.as_view(), name="transactions"),
+    path("api/v1/notifications/", NotificationListView.as_view(), name="notifications"),
+    path(
+        "api/v1/notifications/<uuid:notification_id>/read/",
+        NotificationReadView.as_view(),
+        name="notification-read",
+    ),
 ]
 
 # Serve media files in development

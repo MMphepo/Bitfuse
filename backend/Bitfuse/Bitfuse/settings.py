@@ -129,6 +129,15 @@ CURRENCY_PRECISION = {
     "USDT": 1_000_000,  # 6 decimal places
 }
 
+# Mobile money buy flow: how long a quoted rate stays valid once an order exists.
+PAYMENT_WINDOW_MINUTES = config("PAYMENT_WINDOW_MINUTES", default=15, cast=int)
+
+# Merchant details buyers pay into. Set these per environment.
+AIRTEL_MONEY_BUSINESS_CODE = config("AIRTEL_MONEY_BUSINESS_CODE", default="")
+AIRTEL_MONEY_ACCOUNT_NAME = config("AIRTEL_MONEY_ACCOUNT_NAME", default="Bitfuse")
+TNM_MPAMBA_BUSINESS_CODE = config("TNM_MPAMBA_BUSINESS_CODE", default="")
+TNM_MPAMBA_ACCOUNT_NAME = config("TNM_MPAMBA_ACCOUNT_NAME", default="Bitfuse")
+
 CORS_ALLOW_ALL_ORIGINS = True
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

@@ -84,6 +84,32 @@ class Transaction(models.Model):
         return f"{self.type} {self.amount_usdt} USDT — {self.reference}"
 
 
+class Notification(models.Model):
+    """In-app notification shown to a user as their order moves through the flow."""
+
+    LEVEL_CHOICES = [
+        ("info", "Info"),
+        ("pending", "Pending"),
+        ("success", "Success"),
+        ("error", "Error"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="notifications")
+    level = models.CharField(max_length=10, choices=LEVEL_CHOICES, default="info")
+    title = models.CharField(max_length=120)
+    body = models.TextField(blank=True, default="")
+    reference = models.CharField(max_length=50, blank=True, default="")
+    read = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.user.username}: {self.title}"
+
+
 class PlatformAccount(models.Model):
     """Singleton-style row holding the platform's own Blnk balance IDs."""
     ledger_id = models.CharField(max_length=100)
