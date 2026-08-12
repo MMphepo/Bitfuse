@@ -2,7 +2,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
 
-from .models import Transaction
+from .models import Notification, Transaction
 from orders.models import Order
 
 User = get_user_model()
@@ -70,9 +70,10 @@ class OrderHistorySerializer(serializers.ModelSerializer):
     """Serialize an Order into the same shape as TransactionSerializer.
 
     Order statuses are mapped to the frontend TxStatus enum:
-      - awaiting_payment / awaiting_deposit -> Pending
-      - completed                           -> Completed
-      - cancelled                           -> Cancelled
+      - completed                        -> Completed
+      - cancelled / rejected / expired   -> Cancelled
+      - payment_mismatch                 -> Disputed
+      - everything else                  -> Pending
     """
 
     type = serializers.SerializerMethodField()
@@ -81,9 +82,7 @@ class OrderHistorySerializer(serializers.ModelSerializer):
     amount_usdt = serializers.DecimalField(
         source="usdt_amount", max_digits=18, decimal_places=6
     )
-    amount_mwk = serializers.DecimalField(
-        source="mwk_amount", max_digits=18, decimal_places=2
-    )
+    amount_mwk = serializers.SerializerMethodField()
     fee = serializers.DecimalField(
         source="fee_amount", max_digits=18, decimal_places=2
     )
@@ -109,13 +108,24 @@ class OrderHistorySerializer(serializers.ModelSerializer):
     def get_type(self, obj):
         return "Buy" if obj.order_type == "buy" else "Sell"
 
+    def get_amount_mwk(self, obj):
+        return obj.total_payable_mwk if obj.order_type == "buy" else obj.mwk_amount
+
     def get_status(self, obj):
-        if obj.status == "completed":
+        if obj.status == Order.COMPLETED:
             return "Completed"
-        if obj.status == "cancelled":
+        if obj.status in {Order.CANCELLED, Order.REJECTED, Order.EXPIRED}:
             return "Cancelled"
+        if obj.status == Order.PAYMENT_MISMATCH:
+            return "Disputed"
         return "Pending"
 
     def get_method(self, obj):
         method = (obj.payment_method or "").replace("_", " ").title()
         return method or "Airtel Money"
+
+
+class NotificationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Notification
+        fields = ["id", "level", "title", "body", "reference", "read", "created_at"]

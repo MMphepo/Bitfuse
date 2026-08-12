@@ -5,8 +5,9 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .models import Transaction, Wallet
+from .models import Notification, Transaction, Wallet
 from .serializers import (
+    NotificationSerializer,
     OrderHistorySerializer,
     RegisterSerializer,
     TransactionSerializer,
@@ -108,6 +109,28 @@ class WalletBalanceView(APIView):
         }
         print("[wallets] response data:", response_data)
         return Response(response_data)
+
+
+class NotificationListView(generics.ListAPIView):
+    """GET /api/v1/notifications/ — order lifecycle updates for the current user."""
+
+    serializer_class = NotificationSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return Notification.objects.filter(user=self.request.user)
+
+
+class NotificationReadView(APIView):
+    """POST /api/v1/notifications/{id}/read/ — mark one notification as read."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, notification_id):
+        updated = Notification.objects.filter(id=notification_id, user=request.user).update(read=True)
+        if not updated:
+            return Response({"detail": "Notification not found."}, status=404)
+        return Response({"read": True})
 
 
 class TransactionListView(APIView):
