@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     "accounts",
     "kyc",
     "orders",
+    "withdrawals",
 ]
 
 MIDDLEWARE = [
