@@ -27,6 +27,7 @@ urlpatterns = [
     path("api/v1/auth/", include("accounts.urls")),
     path("api/v1/kyc/", include("kyc.urls")),
     path("api/v1/orders/", include("orders.urls")),
+    path("api/v1/withdrawals/", include("withdrawals.urls")),
     path("api/v1/transactions/", TransactionListView.as_view(), name="transactions"),
     path("api/v1/notifications/", NotificationListView.as_view(), name="notifications"),
     path(
