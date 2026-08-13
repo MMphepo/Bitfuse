@@ -3,19 +3,20 @@ import random
 from decimal import Decimal
 from django.core.management.base import BaseCommand
 from django.contrib.auth import get_user_model
+from django.conf import settings
 from accounts.models import Wallet, Transaction, PlatformAccount
 from kyc.models import KYCSubmission
-from accounts.services import ensure_user_wallets
+from accounts.services import ensure_user_wallets, fetch_wallet_balance
 from accounts.blnk_client import BlnkClient
 
 User = get_user_model()
 
 
 class Command(BaseCommand):
-    help = "Seeds 5 users with approved KYC, > 100 USDT balance, and > 5 historical transactions."
+    help = "Seeds 5 users with approved KYC, > 100 USDT balance, and > 5 historical transactions, directly editing Blnk balances."
 
     def handle(self, *args, **options):
-        self.stdout.write("Seeding users...")
+        self.stdout.write("Seeding users and editing Blnk balances...")
 
         # Ensure a platform account exists
         platform = PlatformAccount.objects.first()
@@ -74,21 +75,37 @@ class Command(BaseCommand):
                 Wallet.objects.get_or_create(user=user, currency="MWK", defaults={"blnk_balance_id": f"mwk-{user.id}"})
                 self.stdout.write(f"Created offline fallback wallets for {username}: {str(e)}")
 
-            # Credit USDT balance to not less than 100 (e.g. 150)
-            usdt_wallet = Wallet.objects.get(user=user, currency="USDT")
+            # Check existing balance from Blnk
+            current_usdt = Decimal("0")
             try:
-                blnk_client.create_transaction(
-                    amount=150_000_000, # 150 USDT (precision 1_000_000)
-                    currency="USDT",
-                    precision=1_000_000,
-                    reference=f"seed-credit-{user.id}",
-                    source=platform.usdt_float_balance_id,
-                    destination=usdt_wallet.blnk_balance_id,
-                    description="Seeded USDT credit balance",
-                )
-                self.stdout.write(f"Credited 150 USDT to {username} via Blnk")
+                balances = fetch_wallet_balance(user)
+                current_usdt = balances.get("USDT", Decimal("0"))
+                self.stdout.write(f"User {username} current Blnk balance: {current_usdt} USDT")
             except Exception as e:
-                self.stdout.write(f"Could not credit {username} via Blnk (offline/ignored): {str(e)}")
+                self.stdout.write(f"Could not fetch Blnk balance for {username}: {str(e)}")
+
+            # Target balance is 150.00 USDT (not less than 100)
+            target_usdt = Decimal("150.00")
+            if current_usdt < target_usdt:
+                diff = target_usdt - current_usdt
+                raw_diff = int(diff * settings.CURRENCY_PRECISION["USDT"])
+                usdt_wallet = Wallet.objects.get(user=user, currency="USDT")
+
+                try:
+                    blnk_client.create_transaction(
+                        amount=raw_diff,
+                        currency="USDT",
+                        precision=settings.CURRENCY_PRECISION["USDT"],
+                        reference=f"seed-credit-{user.id}-{raw_diff}",
+                        source=platform.usdt_float_balance_id,
+                        destination=usdt_wallet.blnk_balance_id,
+                        description="Seeded USDT credit balance adjust",
+                    )
+                    self.stdout.write(f"Successfully edited Blnk balance for {username}: added {diff} USDT to reach target {target_usdt} USDT.")
+                except Exception as e:
+                    self.stdout.write(f"Could not edit {username} Blnk balance (offline/ignored): {str(e)}")
+            else:
+                self.stdout.write(f"User {username} already has sufficient balance: {current_usdt} USDT.")
 
             # Create more than 5 historical transactions (6 transactions)
             existing_txs = Transaction.objects.filter(user=user).count()
@@ -116,4 +133,4 @@ class Command(BaseCommand):
                     )
                 self.stdout.write(f"Generated 6 historical transactions for {username}")
 
-        self.stdout.write(self.style.SUCCESS("User seeding completed successfully."))
+        self.stdout.write(self.style.SUCCESS("User seeding and Blnk balance editing completed successfully."))
