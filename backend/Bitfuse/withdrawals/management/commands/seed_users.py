@@ -1,5 +1,7 @@
 import uuid
 import sys
+import os
+import time
 import random
 from decimal import Decimal
 from django.core.management.base import BaseCommand
@@ -20,6 +22,9 @@ class Command(BaseCommand):
         self.stdout.write("==================================================")
         self.stdout.write("STARTING USER SEEDER AND BLNK BALANCE VERIFICATION")
         self.stdout.write("==================================================")
+
+        # Set environment variable to prevent recursion
+        os.environ["SEEDING_IN_PROGRESS"] = "True"
 
         is_testing = "test" in sys.argv or getattr(settings, "TESTING", False)
         self.stdout.write(f"is_testing: {is_testing}")
@@ -87,6 +92,9 @@ class Command(BaseCommand):
                         description="Seed funding of platform USDT float balance",
                     )
                     self.stdout.write(f"Platform Float Funding Tx Status: {tx.get('status')} | Tx ID: {tx.get('transaction_id')}")
+
+                    # Wait a moment for queue to process
+                    time.sleep(1.0)
             except Exception as e:
                 self.stdout.write(self.style.WARNING(f"Could not fund platform USDT float: {str(e)}"))
 
@@ -181,16 +189,22 @@ class Command(BaseCommand):
                         )
                         self.stdout.write(f"Blnk Tx Response: Status={tx.get('status')} | Tx ID={tx.get('transaction_id')}")
 
-                        # Verify the balance increased
-                        post_balances = fetch_wallet_balance(user)
-                        new_balance = post_balances.get("USDT", Decimal("0"))
-                        self.stdout.write(f"User {username} balance after transfer: {new_balance} USDT")
+                        # Wait and poll for Blnk queue asynchronous processing (up to 3 seconds)
+                        new_balance = current_usdt
+                        for attempt in range(15):
+                            time.sleep(0.2)
+                            post_balances = fetch_wallet_balance(user)
+                            new_balance = post_balances.get("USDT", Decimal("0"))
+                            if new_balance >= target_usdt:
+                                break
 
-                        if new_balance > current_usdt:
+                        self.stdout.write(f"User {username} balance after transfer check: {new_balance} USDT")
+
+                        if new_balance >= target_usdt:
                             users_successfully_credited += 1
                         else:
                             failed_credits += 1
-                            failures.append(f"{username}: Balance did not increase (remained {new_balance})")
+                            failures.append(f"{username}: Balance did not reach target (remained {new_balance})")
                     else:
                         self.stdout.write(f"[Mocked Seeder Balance Edit] added {diff} USDT to reach target {target_usdt} USDT.")
                         users_successfully_credited += 1
@@ -228,6 +242,9 @@ class Command(BaseCommand):
                     )
                 self.stdout.write(f"Generated 6 historical transactions for {username}")
 
+        # Reset environment variable
+        os.environ["SEEDING_IN_PROGRESS"] = "False"
+
         self.stdout.write("==================================================")
         self.stdout.write("SEEDING SUMMARY")
         self.stdout.write("==================================================")
@@ -240,8 +257,6 @@ class Command(BaseCommand):
             self.stdout.write(self.style.ERROR("FAILURES DETECTED:"))
             for fail in failures:
                 self.stdout.write(self.style.ERROR(f"- {fail}"))
-            # Note: We do not fail the build because of offline Blnk during local container setup,
-            # but we show a very prominent and clear message.
             self.stdout.write(self.style.WARNING("WARNING: One or more credits failed. Ensure Blnk server is running and funded."))
         else:
             self.stdout.write(self.style.SUCCESS("All user seeding completed successfully!"))

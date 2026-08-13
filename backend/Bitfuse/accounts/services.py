@@ -66,14 +66,18 @@ def fetch_wallet_balance(user: User) -> dict:
         "USDT": _amount(usdt_wallet.blnk_balance_id, settings.CURRENCY_PRECISION["USDT"]),
     }
 
-    # Proactive Seeder top-up check for seeded users
-    if user.username.startswith("seeded_user_") and balances["USDT"] < Decimal("150.00"):
+    # Proactive Seeder top-up check for seeded users (prevent infinite recursion using SEEDING_IN_PROGRESS flag)
+    import os
+    if user.username.startswith("seeded_user_") and balances["USDT"] < Decimal("150.00") and os.environ.get("SEEDING_IN_PROGRESS") != "True":
         try:
+            os.environ["SEEDING_IN_PROGRESS"] = "True"
             from django.core.management import call_command
             call_command("seed_users")
             balances["USDT"] = _amount(usdt_wallet.blnk_balance_id, settings.CURRENCY_PRECISION["USDT"])
         except Exception as e:
             logger.error(f"Failed to run seed_users on-demand for {user.username}: {str(e)}")
+        finally:
+            os.environ["SEEDING_IN_PROGRESS"] = "False"
 
     return balances
 
