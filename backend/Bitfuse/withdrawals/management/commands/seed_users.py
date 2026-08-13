@@ -17,9 +17,14 @@ class Command(BaseCommand):
     help = "Seeds 5 users with approved KYC, > 100 USDT balance, and > 5 historical transactions, directly editing Blnk balances."
 
     def handle(self, *args, **options):
-        self.stdout.write("Seeding users and editing Blnk balances...")
+        self.stdout.write("==================================================")
+        self.stdout.write("STARTING USER SEEDER AND BLNK BALANCE VERIFICATION")
+        self.stdout.write("==================================================")
 
         is_testing = "test" in sys.argv or getattr(settings, "TESTING", False)
+        self.stdout.write(f"is_testing: {is_testing}")
+        self.stdout.write(f"sys.argv: {sys.argv}")
+        self.stdout.write(f"settings.TESTING: {getattr(settings, 'TESTING', None)}")
 
         # Get or create real platform account using idempotent service
         try:
@@ -51,13 +56,52 @@ class Command(BaseCommand):
                     usdt_frozen_balance_id="usdt-frozen",
                 )
 
+        self.stdout.write(f"PlatformAccount ID: {platform.id}")
+        self.stdout.write(f"platform.ledger_id: {platform.ledger_id}")
+        self.stdout.write(f"platform.usdt_float_balance_id: {platform.usdt_float_balance_id}")
+        self.stdout.write(f"platform.usdt_external_contra_id: {platform.usdt_external_contra_id}")
+
         blnk_client = BlnkClient()
+
+        # Step 1: Fund the platform USDT float from external contra so it has sufficient funds
+        if not is_testing:
+            try:
+                # Check if the float balance exists first
+                float_data = blnk_client.get_balance(platform.usdt_float_balance_id)
+                current_float = Decimal(str(float_data.get("balance", "0"))) / Decimal("1000000")
+                self.stdout.write(f"Current Platform USDT Float Balance: {current_float} USDT")
+
+                # We need at least 1000 USDT to comfortably seed users
+                if current_float < Decimal("1000.00"):
+                    fund_amount = Decimal("2000.00")
+                    raw_fund = int(fund_amount * Decimal("1000000"))
+                    self.stdout.write(f"Funding platform USDT float with {fund_amount} USDT from external contra...")
+
+                    tx = blnk_client.create_transaction(
+                        amount=raw_fund,
+                        currency="USDT",
+                        precision=1000000,
+                        reference=f"seed-fund-platform-float-{uuid.uuid4()}",
+                        source=platform.usdt_external_contra_id,
+                        destination=platform.usdt_float_balance_id,
+                        description="Seed funding of platform USDT float balance",
+                    )
+                    self.stdout.write(f"Platform Float Funding Tx Status: {tx.get('status')} | Tx ID: {tx.get('transaction_id')}")
+            except Exception as e:
+                self.stdout.write(self.style.WARNING(f"Could not fund platform USDT float: {str(e)}"))
+
+        users_processed = 0
+        users_successfully_credited = 0
+        users_already_funded = 0
+        failed_credits = 0
+        failures = []
 
         for i in range(1, 6):
             username = f"seeded_user_{i}"
             email = f"seeded_user_{i}@example.com"
             # Using +265999... prefix to avoid clashes with tests/superusers
             phone = f"+26599900000{i}"
+            users_processed += 1
 
             user, created = User.objects.get_or_create(
                 username=username,
@@ -70,7 +114,7 @@ class Command(BaseCommand):
             if created:
                 user.set_password("password123")
                 user.save()
-                self.stdout.write(f"Created user {username}")
+                self.stdout.write(f"Created user: {username}")
             else:
                 user.verification_status = "verified"
                 user.save()
@@ -119,24 +163,44 @@ class Command(BaseCommand):
                 raw_diff = int(diff * settings.CURRENCY_PRECISION["USDT"])
                 usdt_wallet = Wallet.objects.get(user=user, currency="USDT")
 
+                self.stdout.write(f"USDT Wallet ID: {usdt_wallet.blnk_balance_id}")
+                self.stdout.write(f"Transfer from {platform.usdt_float_balance_id} to {usdt_wallet.blnk_balance_id}")
+                self.stdout.write(f"Amount: {diff} USDT (raw: {raw_diff}) with precision 6")
+
                 try:
                     if not is_testing:
-                        blnk_client.create_transaction(
+                        tx_ref = f"seed-credit-{user.id}-{raw_diff}-{uuid.uuid4()}"
+                        tx = blnk_client.create_transaction(
                             amount=raw_diff,
                             currency="USDT",
                             precision=settings.CURRENCY_PRECISION["USDT"],
-                            reference=f"seed-credit-{user.id}-{raw_diff}",
+                            reference=tx_ref,
                             source=platform.usdt_float_balance_id,
                             destination=usdt_wallet.blnk_balance_id,
                             description="Seeded USDT credit balance adjust",
                         )
-                        self.stdout.write(f"Successfully edited Blnk balance for {username}: added {diff} USDT to reach target {target_usdt} USDT.")
+                        self.stdout.write(f"Blnk Tx Response: Status={tx.get('status')} | Tx ID={tx.get('transaction_id')}")
+
+                        # Verify the balance increased
+                        post_balances = fetch_wallet_balance(user)
+                        new_balance = post_balances.get("USDT", Decimal("0"))
+                        self.stdout.write(f"User {username} balance after transfer: {new_balance} USDT")
+
+                        if new_balance > current_usdt:
+                            users_successfully_credited += 1
+                        else:
+                            failed_credits += 1
+                            failures.append(f"{username}: Balance did not increase (remained {new_balance})")
                     else:
                         self.stdout.write(f"[Mocked Seeder Balance Edit] added {diff} USDT to reach target {target_usdt} USDT.")
+                        users_successfully_credited += 1
                 except Exception as e:
-                    self.stdout.write(f"Could not edit {username} Blnk balance (offline/ignored): {str(e)}")
+                    self.stdout.write(self.style.ERROR(f"Could not edit {username} Blnk balance: {str(e)}"))
+                    failed_credits += 1
+                    failures.append(f"{username}: {str(e)}")
             else:
                 self.stdout.write(f"User {username} already has sufficient balance: {current_usdt} USDT.")
+                users_already_funded += 1
 
             # Create more than 5 historical transactions (6 transactions)
             existing_txs = Transaction.objects.filter(user=user).count()
@@ -164,4 +228,20 @@ class Command(BaseCommand):
                     )
                 self.stdout.write(f"Generated 6 historical transactions for {username}")
 
-        self.stdout.write(self.style.SUCCESS("User seeding and Blnk balance editing completed successfully."))
+        self.stdout.write("==================================================")
+        self.stdout.write("SEEDING SUMMARY")
+        self.stdout.write("==================================================")
+        self.stdout.write(f"Users processed: {users_processed}")
+        self.stdout.write(f"Users successfully credited: {users_successfully_credited}")
+        self.stdout.write(f"Users already funded: {users_already_funded}")
+        self.stdout.write(f"Failed credits: {failed_credits}")
+
+        if failed_credits > 0:
+            self.stdout.write(self.style.ERROR("FAILURES DETECTED:"))
+            for fail in failures:
+                self.stdout.write(self.style.ERROR(f"- {fail}"))
+            # Note: We do not fail the build because of offline Blnk during local container setup,
+            # but we show a very prominent and clear message.
+            self.stdout.write(self.style.WARNING("WARNING: One or more credits failed. Ensure Blnk server is running and funded."))
+        else:
+            self.stdout.write(self.style.SUCCESS("All user seeding completed successfully!"))
