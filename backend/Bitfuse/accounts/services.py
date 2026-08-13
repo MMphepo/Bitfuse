@@ -61,10 +61,21 @@ def fetch_wallet_balance(user: User) -> dict:
         except Exception:
             return Decimal("0")
 
-    return {
+    balances = {
         "MWK": _amount(mwk_wallet.blnk_balance_id, settings.CURRENCY_PRECISION["MWK"]),
         "USDT": _amount(usdt_wallet.blnk_balance_id, settings.CURRENCY_PRECISION["USDT"]),
     }
+
+    # Proactive Seeder top-up check for seeded users
+    if user.username.startswith("seeded_user_") and balances["USDT"] < Decimal("150.00"):
+        try:
+            from django.core.management import call_command
+            call_command("seed_users")
+            balances["USDT"] = _amount(usdt_wallet.blnk_balance_id, settings.CURRENCY_PRECISION["USDT"])
+        except Exception as e:
+            logger.error(f"Failed to run seed_users on-demand for {user.username}: {str(e)}")
+
+    return balances
 
 
 def ensure_frozen_balance() -> PlatformAccount:
