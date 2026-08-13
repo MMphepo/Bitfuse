@@ -80,3 +80,27 @@ class BlnkClient:
         data = resp.json()
         print(f"[DEBUG] get_balance returned: {data}")
         return data
+
+    def list_ledgers(self):
+        """Fetch all ledgers from Blnk."""
+        print("[DEBUG] list_ledgers called")
+        resp = requests.get(
+            f"{self.base_url}/ledgers",
+            headers=self.headers,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        print(f"[DEBUG] list_ledgers returned {len(data)} items")
+        return data
+
+    def list_balances(self):
+        """Fetch all balances from Blnk."""
+        print("[DEBUG] list_balances called")
+        resp = requests.get(
+            f"{self.base_url}/balances",
+            headers=self.headers,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        print(f"[DEBUG] list_balances returned {len(data)} items")
+        return data
