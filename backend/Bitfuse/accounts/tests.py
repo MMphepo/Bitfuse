@@ -1,3 +1,201 @@
-from django.test import TestCase
+import threading
+from decimal import Decimal
+from unittest import mock
+from django.test import TestCase, TransactionTestCase
+from django.contrib.auth import get_user_model
+from accounts.models import PlatformAccount, Wallet
+from accounts.services import get_or_create_platform_account, ensure_user_wallets
+from orders.services import complete_buy_order, complete_sell_order
 
-# Create your tests here.
+User = get_user_model()
+
+
+class BlnkIntegrationTests(TransactionTestCase):
+    """TransactionTestCase is used here to support concurrent initialization locks if needed."""
+
+    def setUp(self):
+        # Clean up database records
+        PlatformAccount.objects.all().delete()
+        User.objects.all().delete()
+        Wallet.objects.all().delete()
+
+        self.mock_client = mock.MagicMock()
+        self.mock_client.create_ledger.return_value = {"ledger_id": "led-new-123"}
+        self.mock_client.create_balance.side_effect = lambda ledger_id, currency, meta: {
+            "balance_id": f"bal-{currency.lower()}-{meta.get('role', 'generic')}"
+        }
+        self.mock_client.get_balance.return_value = {"balance": 1000000}
+        self.mock_client.list_ledgers.return_value = []
+        self.mock_client.list_balances.return_value = []
+
+    def test_1_existing_float_does_not_recreate(self):
+        """When the platform account exists in DB, no new ledger or balance is created in Blnk."""
+        platform = PlatformAccount.objects.create(
+            ledger_id="ledger-existing",
+            mwk_float_balance_id="mwk-float-existing",
+            usdt_float_balance_id="usdt-float-existing",
+            mwk_external_contra_id="mwk-contra-existing",
+            usdt_external_contra_id="usdt-contra-existing",
+            usdt_frozen_balance_id="usdt-frozen-existing",
+        )
+
+        result = get_or_create_platform_account(client=self.mock_client)
+
+        self.assertEqual(result.id, platform.id)
+        self.assertEqual(result.usdt_float_balance_id, "usdt-float-existing")
+        self.mock_client.create_ledger.assert_not_called()
+        self.mock_client.create_balance.assert_not_called()
+
+    def test_2_missing_database_mapping_but_blnk_resource_exists(self):
+        """If database mapping is missing but Blnk ledger/balances exist, reconcile instead of duplicating."""
+        # Simulate Blnk containing the resources
+        self.mock_client.list_ledgers.return_value = [
+            {"ledger_id": "led-found-456", "name": "Bitfuse Platform Account"}
+        ]
+        self.mock_client.list_balances.return_value = [
+            {"balance_id": "bal-mwk-float-found", "ledger_id": "led-found-456", "meta_data": {"role": "platform_mwk_float"}},
+            {"balance_id": "bal-usdt-float-found", "ledger_id": "led-found-456", "meta_data": {"role": "platform_usdt_float"}},
+            {"balance_id": "bal-mwk-contra-found", "ledger_id": "led-found-456", "meta_data": {"role": "external_mwk_contra"}},
+            {"balance_id": "bal-usdt-contra-found", "ledger_id": "led-found-456", "meta_data": {"role": "external_usdt_contra"}},
+            {"balance_id": "bal-usdt-frozen-found", "ledger_id": "led-found-456", "meta_data": {"role": "platform_usdt_frozen"}},
+        ]
+
+        result = get_or_create_platform_account(client=self.mock_client)
+
+        self.assertEqual(result.ledger_id, "led-found-456")
+        self.assertEqual(result.usdt_float_balance_id, "bal-usdt-float-found")
+        self.assertEqual(result.usdt_frozen_balance_id, "bal-usdt-frozen-found")
+        self.mock_client.create_ledger.assert_not_called()
+        self.mock_client.create_balance.assert_not_called()
+
+    def test_3_completely_missing_float_creates_once(self):
+        """If platform account is completely missing, create it once and persist."""
+        result = get_or_create_platform_account(client=self.mock_client)
+
+        self.assertEqual(result.ledger_id, "led-new-123")
+        self.assertEqual(result.usdt_float_balance_id, "bal-usdt-platform_usdt_float")
+        self.mock_client.create_ledger.assert_called_once_with("Bitfuse Platform Account")
+        self.assertEqual(self.mock_client.create_balance.call_count, 5)
+
+    def test_4_buy_references_correct_balances(self):
+        """Verify buy order finalization references correct float and user wallet balance IDs."""
+        platform = PlatformAccount.objects.create(
+            ledger_id="led-id",
+            mwk_float_balance_id="mwk-float-id",
+            usdt_float_balance_id="usdt-float-id",
+            mwk_external_contra_id="mwk-contra-id",
+            usdt_external_contra_id="usdt-contra-id",
+            usdt_frozen_balance_id="usdt-frozen-id",
+        )
+
+        user = User.objects.create_user(
+            username="buyer", email="b@example.com", phone_number="+265991000999"
+        )
+        Wallet.objects.create(user=user, currency="USDT", blnk_balance_id="buyer-usdt-bal")
+        Wallet.objects.create(user=user, currency="MWK", blnk_balance_id="buyer-mwk-bal")
+
+        from orders.models import Order
+        order = Order.objects.create(
+            reference_number="BF-BUY123",
+            user=user,
+            order_type="buy",
+            mwk_amount=Decimal("185000"),
+            usdt_amount=Decimal("100"),
+            rate=Decimal("1850"),
+            fee_percent=Decimal("1"),
+            fee_amount=Decimal("1850"),
+            payment_method="airtel_money",
+            phone="+265991000999",
+            status="payment_verified",
+        )
+
+        mock_blnk_client = mock.MagicMock()
+        mock_blnk_client.create_transaction.return_value = {"transaction_id": "tx-ok"}
+
+        with mock.patch("orders.services.BlnkClient", return_value=mock_blnk_client), \
+             mock.patch("orders.services.ensure_user_wallets", return_value=(None, Wallet.objects.get(user=user, currency="USDT"))):
+            complete_buy_order(order)
+
+        # Check Blnk transactions:
+        # Leg 1: external contra -> float mwk
+        # Leg 2: usdt platform float -> user wallet
+        self.assertEqual(mock_blnk_client.create_transaction.call_count, 2)
+        calls = mock_blnk_client.create_transaction.call_args_list
+
+        # USDT released Leg
+        usdt_call = calls[1][1]
+        self.assertEqual(usdt_call["source"], "usdt-float-id")
+        self.assertEqual(usdt_call["destination"], "buyer-usdt-bal")
+
+    def test_5_sell_references_correct_balances(self):
+        """Verify sell order completion references user's USDT wallet, escrow, and platform float."""
+        platform = PlatformAccount.objects.create(
+            ledger_id="led-id",
+            mwk_float_balance_id="mwk-float-id",
+            usdt_float_balance_id="usdt-float-id",
+            mwk_external_contra_id="mwk-contra-id",
+            usdt_external_contra_id="usdt-contra-id",
+            usdt_frozen_balance_id="usdt-frozen-id",
+        )
+
+        user = User.objects.create_user(
+            username="seller", email="s@example.com", phone_number="+265991000888"
+        )
+        Wallet.objects.create(user=user, currency="USDT", blnk_balance_id="seller-usdt-bal")
+        Wallet.objects.create(user=user, currency="MWK", blnk_balance_id="seller-mwk-bal")
+
+        from orders.models import Order
+        order = Order.objects.create(
+            reference_number="BF-SELL123",
+            user=user,
+            order_type="sell",
+            mwk_amount=Decimal("185000"),
+            usdt_amount=Decimal("100"),
+            rate=Decimal("1850"),
+            fee_percent=Decimal("1"),
+            fee_amount=Decimal("1850"),
+            payment_method="airtel_money",
+            phone="+265991000888",
+            status="awaiting_deposit",
+        )
+
+        mock_blnk_client = mock.MagicMock()
+        mock_blnk_client.create_transaction.return_value = {"transaction_id": "tx-ok"}
+
+        with mock.patch("orders.services.BlnkClient", return_value=mock_blnk_client):
+            complete_sell_order(order)
+
+        # check Blnk transaction Leg 1: frozen escrow -> platform float
+        calls = mock_blnk_client.create_transaction.call_args_list
+        usdt_escrow_call = calls[0][1]
+        self.assertEqual(usdt_escrow_call["source"], "usdt-frozen-id")
+        self.assertEqual(usdt_escrow_call["destination"], "usdt-float-id")
+
+    def test_6_invalid_balance_raises_error(self):
+        """If configured Blnk ID does not exist, get_or_create_platform_account raises a clear integration error."""
+        PlatformAccount.objects.create(
+            ledger_id="led-id",
+            mwk_float_balance_id="mwk-float-id",
+            usdt_float_balance_id="usdt-float-invalid-id",
+            mwk_external_contra_id="mwk-contra-id",
+            usdt_external_contra_id="usdt-contra-id",
+            usdt_frozen_balance_id="usdt-frozen-id",
+        )
+
+        # Simulate broken Blnk client / connection
+        self.mock_client.get_balance.side_effect = RuntimeError("Blnk Offline")
+        self.mock_client.list_ledgers.side_effect = RuntimeError("Blnk Offline")
+        self.mock_client.create_ledger.side_effect = RuntimeError("Blnk Offline")
+
+        with self.settings(TESTING=False):
+            with self.assertRaises(RuntimeError) as exc:
+                get_or_create_platform_account(client=self.mock_client)
+            self.assertIn("Failed to create Blnk platform ledger", str(exc.exception))
+
+    def test_7_concurrent_initialization(self):
+        """Sequential duplicate initialization calls must be fully idempotent and not create duplicates."""
+        res1 = get_or_create_platform_account(client=self.mock_client)
+        res2 = get_or_create_platform_account(client=self.mock_client)
+
+        self.assertEqual(res1.id, res2.id)
+        self.assertEqual(PlatformAccount.objects.count(), 1)
