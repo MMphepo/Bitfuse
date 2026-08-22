@@ -92,23 +92,21 @@ class WalletBalanceView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        print("[wallets] GET /api/v1/auth/wallets/ called")
-        print("[wallets] authenticated user:", request.user.id, request.user.username)
-        print("[wallets] user.blnk_ledger_id:", getattr(request.user, "blnk_ledger_id", None))
-
         from accounts.services import fetch_wallet_balance
+        from rest_framework import status
 
-        print("[wallets] calling fetch_wallet_balance...")
-        balances = fetch_wallet_balance(request.user)
-        print("[wallets] raw balances:", balances)
-        print("[wallets] MWK:", balances.get("MWK"), "| USDT:", balances.get("USDT"))
-
-        response_data = {
-            "mwk": float(balances["MWK"]),
-            "usdt": float(balances["USDT"]),
-        }
-        print("[wallets] response data:", response_data)
-        return Response(response_data)
+        try:
+            balances = fetch_wallet_balance(request.user)
+            response_data = {
+                "mwk": float(balances["MWK"]),
+                "usdt": float(balances["USDT"]),
+            }
+            return Response(response_data, status=status.HTTP_200_OK)
+        except Exception as exc:
+            return Response(
+                {"detail": "Ledger service temporarily unavailable. Please try again shortly.", "error": str(exc)},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
 
 class NotificationListView(generics.ListAPIView):

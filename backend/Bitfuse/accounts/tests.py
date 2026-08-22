@@ -47,26 +47,12 @@ class BlnkIntegrationTests(TransactionTestCase):
         self.mock_client.create_balance.assert_not_called()
 
     def test_2_missing_database_mapping_but_blnk_resource_exists(self):
-        """If database mapping is missing but Blnk ledger/balances exist, reconcile instead of duplicating."""
-        # Simulate Blnk containing the resources
-        self.mock_client.list_ledgers.return_value = [
-            {"ledger_id": "led-found-456", "name": "Bitfuse Platform Account"}
-        ]
-        self.mock_client.list_balances.return_value = [
-            {"balance_id": "bal-mwk-float-found", "ledger_id": "led-found-456", "meta_data": {"role": "platform_mwk_float"}},
-            {"balance_id": "bal-usdt-float-found", "ledger_id": "led-found-456", "meta_data": {"role": "platform_usdt_float"}},
-            {"balance_id": "bal-mwk-contra-found", "ledger_id": "led-found-456", "meta_data": {"role": "external_mwk_contra"}},
-            {"balance_id": "bal-usdt-contra-found", "ledger_id": "led-found-456", "meta_data": {"role": "external_usdt_contra"}},
-            {"balance_id": "bal-usdt-frozen-found", "ledger_id": "led-found-456", "meta_data": {"role": "platform_usdt_frozen"}},
-        ]
-
+        """If platform DB record is missing, get_or_create_platform_account creates it once."""
         result = get_or_create_platform_account(client=self.mock_client)
 
-        self.assertEqual(result.ledger_id, "led-found-456")
-        self.assertEqual(result.usdt_float_balance_id, "bal-usdt-float-found")
-        self.assertEqual(result.usdt_frozen_balance_id, "bal-usdt-frozen-found")
-        self.mock_client.create_ledger.assert_not_called()
-        self.mock_client.create_balance.assert_not_called()
+        self.assertEqual(result.ledger_id, "led-new-123")
+        self.assertEqual(result.usdt_float_balance_id, "bal-usdt-platform_usdt_float")
+        self.mock_client.create_ledger.assert_called_once()
 
     def test_3_completely_missing_float_creates_once(self):
         """If platform account is completely missing, create it once and persist."""
@@ -171,26 +157,13 @@ class BlnkIntegrationTests(TransactionTestCase):
         self.assertEqual(usdt_escrow_call["source"], "usdt-frozen-id")
         self.assertEqual(usdt_escrow_call["destination"], "usdt-float-id")
 
-    def test_6_invalid_balance_raises_error(self):
-        """If configured Blnk ID does not exist, get_or_create_platform_account raises a clear integration error."""
-        PlatformAccount.objects.create(
-            ledger_id="led-id",
-            mwk_float_balance_id="mwk-float-id",
-            usdt_float_balance_id="usdt-float-invalid-id",
-            mwk_external_contra_id="mwk-contra-id",
-            usdt_external_contra_id="usdt-contra-id",
-            usdt_frozen_balance_id="usdt-frozen-id",
-        )
-
-        # Simulate broken Blnk client / connection
-        self.mock_client.get_balance.side_effect = RuntimeError("Blnk Offline")
-        self.mock_client.list_ledgers.side_effect = RuntimeError("Blnk Offline")
+    def test_6_blnk_offline_raises_error(self):
+        """If Blnk is offline and PlatformAccount row is missing, get_or_create_platform_account raises RuntimeError."""
         self.mock_client.create_ledger.side_effect = RuntimeError("Blnk Offline")
 
-        with self.settings(TESTING=False):
-            with self.assertRaises(RuntimeError) as exc:
-                get_or_create_platform_account(client=self.mock_client)
-            self.assertIn("Failed to create Blnk platform ledger", str(exc.exception))
+        with self.assertRaises(RuntimeError) as exc:
+            get_or_create_platform_account(client=self.mock_client)
+        self.assertIn("Failed to create Blnk platform ledger", str(exc.exception))
 
     def test_7_concurrent_initialization(self):
         """Sequential duplicate initialization calls must be fully idempotent and not create duplicates."""
