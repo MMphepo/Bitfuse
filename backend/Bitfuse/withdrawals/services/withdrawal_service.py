@@ -8,7 +8,9 @@ from rest_framework.exceptions import PermissionDenied
 from accounts.blnk_client import BlnkClient
 from accounts.models import PlatformAccount
 from accounts.services import ensure_user_wallets, fetch_wallet_balance
-from withdrawals.models import Withdrawal, WithdrawalConfig
+from decouple import config
+
+from withdrawals.models import Withdrawal, WithdrawalConfig, WithdrawalNetworkConfig, WithdrawalAddress
 from withdrawals.services.blockchain import get_blockchain_provider
 
 logger = logging.getLogger(__name__)
@@ -25,31 +27,52 @@ def check_kyc_status(user):
         raise PermissionDenied("Complete identity verification before withdrawing from Bitfuse.")
 
 
-def get_withdrawal_quote(user, amount: Decimal) -> dict:
-    """Calculate withdrawal fees, limits, and net amount for the user."""
+def get_withdrawal_quote(user, amount: Decimal, asset: str = "USDT", network: str = "TRON") -> dict:
+    """Calculate withdrawal fees, limits, and net amount for the user per network."""
     check_kyc_status(user)
 
-    config_obj = WithdrawalConfig.get_current()
-    if config_obj.withdrawals_frozen:
+    canonical_net = network.strip().upper()
+    if canonical_net in ["BEP20", "BNB"]:
+        canonical_net = "BSC"
+    elif canonical_net == "TRC20":
+        canonical_net = "TRON"
+
+    # Environmental Kill-Switch Check
+    global_crypto_enabled = config("CRYPTO_WITHDRAWALS_ENABLED", cast=bool, default=True)
+    if not global_crypto_enabled:
+        raise WithdrawalError("Crypto withdrawals are currently disabled platform-wide.")
+
+    if canonical_net == "BSC":
+        bsc_enabled = config("BSC_ENABLED", cast=bool, default=True)
+        bsc_withdrawals_enabled = config("BSC_WITHDRAWALS_ENABLED", cast=bool, default=True)
+        if not (bsc_enabled and bsc_withdrawals_enabled):
+            raise WithdrawalError("BSC withdrawals are currently disabled.")
+
+    global_config = WithdrawalConfig.get_current()
+    if global_config.withdrawals_frozen:
         raise WithdrawalError("Withdrawals are temporarily frozen by the administrator.")
+
+    net_config = WithdrawalNetworkConfig.get_for_network(canonical_net, asset)
+    if net_config.withdrawals_frozen or not net_config.withdrawals_enabled:
+        raise WithdrawalError(f"{asset} withdrawals on {canonical_net} are currently disabled or frozen.")
 
     if amount <= Decimal("0"):
         raise WithdrawalError("Withdrawal amount must be greater than zero.")
 
-    if amount < config_obj.min_usdt_withdrawal:
-        raise WithdrawalError(f"Amount is below the minimum withdrawal limit of {config_obj.min_usdt_withdrawal} USDT.")
+    if amount < net_config.min_withdrawal:
+        raise WithdrawalError(f"Amount is below the minimum withdrawal limit of {net_config.min_withdrawal} {asset}.")
 
-    if amount > config_obj.max_usdt_withdrawal:
-        raise WithdrawalError(f"Amount exceeds the maximum withdrawal limit of {config_obj.max_usdt_withdrawal} USDT.")
+    if amount > net_config.max_withdrawal:
+        raise WithdrawalError(f"Amount exceeds the maximum withdrawal limit of {net_config.max_withdrawal} {asset}.")
 
-    fee = config_obj.withdrawal_fee
+    fee = net_config.withdrawal_fee
     net_amount = amount - fee
     if net_amount <= Decimal("0"):
         raise WithdrawalError("Withdrawal amount is too small to cover the applicable fee.")
 
     return {
-        "asset": "USDT",
-        "network": "TRON",
+        "asset": asset.upper(),
+        "network": canonical_net,
         "amount": amount,
         "fee": fee,
         "net_amount": net_amount,
@@ -59,39 +82,41 @@ def get_withdrawal_quote(user, amount: Decimal) -> dict:
 def initiate_withdrawal(user, asset: str, network: str, amount: Decimal, destination_address: str) -> Withdrawal:
     """Initiates the secure USDT withdrawal system for verified users.
 
-    Ensures KYC status, balance checks, TRON address validation, Blnk locking,
+    Ensures KYC status, balance checks, TRON/BSC address validation, Blnk locking,
     blockchain transaction broadcasting, and idempotency protection.
     """
     # 1. Validation gates
     check_kyc_status(user)
 
-    if asset.strip().upper() != "USDT":
+    canonical_asset = asset.strip().upper()
+    canonical_net = network.strip().upper()
+    if canonical_net in ["BEP20", "BNB"]:
+        canonical_net = "BSC"
+    elif canonical_net == "TRC20":
+        canonical_net = "TRON"
+
+    if canonical_asset != "USDT":
         raise WithdrawalError("Only USDT withdrawals are supported at this stage.")
 
-    if network.strip().upper() != "TRON":
-        raise WithdrawalError("Only TRON (TRC-20) network is supported.")
+    if canonical_net not in ["TRON", "BSC"]:
+        raise WithdrawalError(f"Unsupported blockchain network '{network}'. Supported networks: TRON, BSC.")
 
-    config_obj = WithdrawalConfig.get_current()
-    if config_obj.withdrawals_frozen:
-        raise WithdrawalError("Withdrawals are temporarily frozen by the administrator.")
+    quote = get_withdrawal_quote(user, amount, asset=canonical_asset, network=canonical_net)
+    fee = quote["fee"]
+    net_amount = quote["net_amount"]
 
-    # Check limit boundaries
-    if amount <= Decimal("0"):
-        raise WithdrawalError("Withdrawal amount must be greater than zero.")
-    if amount < config_obj.min_usdt_withdrawal:
-        raise WithdrawalError(f"Amount is below the minimum withdrawal limit of {config_obj.min_usdt_withdrawal} USDT.")
-    if amount > config_obj.max_usdt_withdrawal:
-        raise WithdrawalError(f"Amount exceeds the maximum withdrawal limit of {config_obj.max_usdt_withdrawal} USDT.")
-
-    fee = config_obj.withdrawal_fee
-    net_amount = amount - fee
-    if net_amount <= Decimal("0"):
-        raise WithdrawalError("Withdrawal amount is too small to cover the applicable fee.")
-
-    # Validate destination address
-    provider = get_blockchain_provider(network)
+    # Validate destination address using registered network provider
+    provider = get_blockchain_provider(canonical_net)
     if not provider.validate_address(destination_address):
-        raise WithdrawalError(f"The address '{destination_address}' is not a valid TRON address.")
+        raise WithdrawalError(f"The address '{destination_address}' is not a valid {canonical_net} address.")
+
+    # Track/Save destination address bound explicitly to network
+    WithdrawalAddress.objects.get_or_create(
+        user=user,
+        address=destination_address,
+        network=canonical_net,
+        defaults={"verified": True}
+    )
 
     # Fetch Blnk Wallet and balance
     mwk_wallet, usdt_wallet = ensure_user_wallets(user)
@@ -124,8 +149,8 @@ def initiate_withdrawal(user, asset: str, network: str, amount: Decimal, destina
             # Create withdrawal record
             withdrawal = Withdrawal.objects.create(
                 user=user,
-                asset="USDT",
-                network="TRON",
+                asset=canonical_asset,
+                network=canonical_net,
                 amount=amount,
                 fee=fee,
                 net_amount=net_amount,

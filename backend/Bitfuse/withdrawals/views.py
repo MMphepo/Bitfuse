@@ -31,8 +31,10 @@ class WithdrawalQuoteView(APIView):
         serializer.is_valid(raise_exception=True)
 
         amount = serializer.validated_data["amount"]
+        asset = serializer.validated_data.get("asset", "USDT")
+        network = serializer.validated_data.get("network", "TRON")
         try:
-            quote = get_withdrawal_quote(request.user, amount)
+            quote = get_withdrawal_quote(request.user, amount, asset=asset, network=network)
             return Response(quote, status=status.HTTP_200_OK)
         except WithdrawalError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
