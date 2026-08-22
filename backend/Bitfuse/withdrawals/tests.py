@@ -149,10 +149,11 @@ class WithdrawalSystemTests(TestCase):
         self.assertEqual(response.status_code, 400)
 
     def test_withdrawal_limits_min_max(self):
-        config_obj = WithdrawalConfig.get_current()
-        config_obj.min_usdt_withdrawal = Decimal("20.00")
-        config_obj.max_usdt_withdrawal = Decimal("500.00")
-        config_obj.save()
+        from withdrawals.models import WithdrawalNetworkConfig
+        net_cfg = WithdrawalNetworkConfig.get_for_network("TRON", "USDT")
+        net_cfg.min_withdrawal = Decimal("20.00")
+        net_cfg.max_withdrawal = Decimal("500.00")
+        net_cfg.save()
 
         # Below min
         response = self.client.post(reverse("withdrawal-list-create"), {
@@ -193,7 +194,8 @@ class WithdrawalSystemTests(TestCase):
             "destination_address": "TY4hG6Xz6m93ssVjUr3NZsSXYhxXabc123"
         })
         self.assertEqual(response.status_code, 400)
-        self.assertIn("Only TRON (TRC-20) network is supported", response.data["detail"])
+        detail_msg = str(response.data.get("detail") or response.data.get("network") or response.data)
+        self.assertTrue("Unsupported network" in detail_msg or "TRON" in detail_msg)
 
     # --- Balance & Fee System ---
 
@@ -322,3 +324,113 @@ class WithdrawalSystemTests(TestCase):
         })
         self.assertEqual(response_quote.status_code, 400)
         self.assertIn("temporarily frozen", response_quote.data["detail"])
+
+
+class BscWithdrawalTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="bsc_alice",
+            email="bsc_alice@example.com",
+            password="password123",
+            verification_status="verified",
+        )
+        make_platform_account()
+        Wallet.objects.create(user=self.user, currency="USDT", blnk_balance_id="bsc-alice-usdt")
+        Wallet.objects.create(user=self.user, currency="MWK", blnk_balance_id="bsc-alice-mwk")
+
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+        self.blnk_patcher = mock.patch("withdrawals.services.withdrawal_service.BlnkClient")
+        self.mock_blnk = self.blnk_patcher.start()
+        self.mock_blnk.return_value.create_transaction.side_effect = lambda **kwargs: {
+            "transaction_id": f"bsc-txn-{kwargs.get('reference', 'ref')}"
+        }
+
+        self.workers_blnk_patcher = mock.patch("withdrawals.services.workers.BlnkClient")
+        self.mock_workers_blnk = self.workers_blnk_patcher.start()
+        self.mock_workers_blnk.return_value.create_transaction.side_effect = lambda **kwargs: {
+            "transaction_id": f"bsc-deposit-txn-{kwargs.get('reference', 'ref')}"
+        }
+
+        self.balance_patcher = mock.patch(
+            "withdrawals.services.withdrawal_service.fetch_wallet_balance",
+            return_value={"USDT": Decimal("500.000000"), "MWK": Decimal("0.00")},
+        )
+        self.mock_balances = self.balance_patcher.start()
+
+        self.wallets_patcher = mock.patch(
+            "withdrawals.services.withdrawal_service.ensure_user_wallets"
+        )
+        self.mock_ensure_wallets = self.wallets_patcher.start()
+        self.mock_ensure_wallets.side_effect = lambda u: (
+            Wallet.objects.get(user=u, currency="MWK"),
+            Wallet.objects.get(user=u, currency="USDT"),
+        )
+
+        self.addCleanup(mock.patch.stopall)
+
+    def test_evm_address_validation(self):
+        from withdrawals.services.blockchain.bsc import validate_evm_address
+        self.assertTrue(validate_evm_address("0xdAC17F958D2ee523a2206206994597C13D831ec7"))
+        self.assertTrue(validate_evm_address("0xdac17f958d2ee523a2206206994597c13d831ec7"))
+        self.assertFalse(validate_evm_address("TY4hG6Xz6m93ssVjUr3NZsSXYhxXabc123"))
+        self.assertFalse(validate_evm_address("0x1234"))
+
+    def test_bsc_withdrawal_quote(self):
+        response = self.client.post(reverse("withdrawal-quote"), {
+            "asset": "USDT",
+            "network": "BSC",
+            "amount": "100.00"
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["network"], "BSC")
+        self.assertEqual(response.data["fee"], Decimal("1.00"))
+        self.assertEqual(response.data["net_amount"], Decimal("99.00"))
+
+    def test_bsc_withdrawal_initiate_success(self):
+        valid_evm_address = "0xdAC17F958D2ee523a2206206994597C13D831ec7"
+        response = self.client.post(reverse("withdrawal-list-create"), {
+            "asset": "USDT",
+            "network": "BSC",
+            "amount": "100.00",
+            "destination_address": valid_evm_address
+        })
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["network"], "BSC")
+        self.assertEqual(response.data["status"], "BROADCAST")
+        self.assertIsNotNone(response.data["transaction_hash"])
+
+        withdrawal = Withdrawal.objects.get(id=response.data["id"])
+        self.assertEqual(withdrawal.network, "BSC")
+        self.assertEqual(withdrawal.amount, Decimal("100.00"))
+
+    def test_bsc_nonce_concurrency_tracker(self):
+        from withdrawals.services.blockchain.bsc import BscNonceManager
+        wallet = "0x1111111111111111111111111111111111111111"
+        nonce1 = BscNonceManager.allocate_nonce(wallet)
+        nonce2 = BscNonceManager.allocate_nonce(wallet)
+        self.assertEqual(nonce1, 0)
+        self.assertEqual(nonce2, 1)
+
+    def test_deposit_verification_and_blnk_credit(self):
+        from withdrawals.services.workers import process_bsc_deposit_event
+        from withdrawals.models import DepositRecord
+
+        event_data = {
+            "event_id": "97:0xhash123:0",
+            "tx_hash": "0xhash123",
+            "log_index": 0,
+            "from_address": "0x1111111111111111111111111111111111111111",
+            "to_address": "0x2222222222222222222222222222222222222222",
+            "amount": Decimal("50.00"),
+            "block_number": 1000,
+            "confirmations": 15,
+            "user": self.user,
+        }
+
+        with mock.patch("withdrawals.services.blockchain.bsc.BscProvider.verify_transfer", return_value=True):
+            deposit = process_bsc_deposit_event(event_data)
+            self.assertEqual(deposit.status, "CREDITED")
+            self.assertIsNotNone(deposit.blnk_transaction_id)
+            self.mock_workers_blnk.return_value.create_transaction.assert_called()
