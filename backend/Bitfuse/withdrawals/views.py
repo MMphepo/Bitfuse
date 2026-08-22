@@ -17,6 +17,43 @@ from .services.withdrawal_service import (
 )
 
 
+class WithdrawalConfigView(APIView):
+    """GET /api/v1/withdrawals/config/
+
+    Returns current withdrawal configuration (limits, fees, status) for networks.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        from .models import WithdrawalConfig, WithdrawalNetworkConfig
+        from .serializers import WithdrawalConfigSerializer
+
+        config_obj = WithdrawalConfig.get_current()
+        tron_net = WithdrawalNetworkConfig.get_for_network("TRON", "USDT")
+        bsc_net = WithdrawalNetworkConfig.get_for_network("BSC", "USDT")
+
+        return Response({
+            "withdrawal_fee": config_obj.withdrawal_fee,
+            "min_usdt_withdrawal": config_obj.min_usdt_withdrawal,
+            "max_usdt_withdrawal": config_obj.max_usdt_withdrawal,
+            "withdrawals_frozen": config_obj.withdrawals_frozen,
+            "networks": {
+                "TRON": {
+                    "withdrawal_fee": tron_net.withdrawal_fee,
+                    "min_withdrawal": tron_net.min_withdrawal,
+                    "max_withdrawal": tron_net.max_withdrawal,
+                    "withdrawals_enabled": tron_net.withdrawals_enabled and not tron_net.withdrawals_frozen,
+                },
+                "BSC": {
+                    "withdrawal_fee": bsc_net.withdrawal_fee,
+                    "min_withdrawal": bsc_net.min_withdrawal,
+                    "max_withdrawal": bsc_net.max_withdrawal,
+                    "withdrawals_enabled": bsc_net.withdrawals_enabled and not bsc_net.withdrawals_frozen,
+                }
+            }
+        }, status=status.HTTP_200_OK)
+
+
 class WithdrawalQuoteView(APIView):
     """POST /api/v1/withdrawals/quote/
 
