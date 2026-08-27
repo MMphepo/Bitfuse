@@ -19,6 +19,7 @@ from .serializers import (
 )
 from .services import (
     OrderError,
+    complete_buy_order,
     complete_sell_order,
     expire_order_if_due,
     reject_payment,
@@ -105,6 +106,11 @@ class OrderDetailView(APIView):
     def get(self, request, order_id):
         order = get_object_or_404(Order, id=order_id, user=request.user)
         expire_order_if_due(order)
+        if order.status == Order.SETTLING and order.order_type == "buy":
+            try:
+                complete_buy_order(order)
+            except Exception:
+                pass
         return Response(OrderSerializer(order).data)
 
 

@@ -5,11 +5,14 @@ financial truth. Every money movement goes through Blnk, and the Django
 database records the business outcome.
 """
 
+import logging
 import random
 import string
 import time
 from datetime import timedelta
 from decimal import Decimal
+
+logger = logging.getLogger(__name__)
 
 from django.db import transaction as db_transaction
 from django.utils import timezone
@@ -374,6 +377,19 @@ def verify_payment(order, admin, received_amount=None, note=""):
     return complete_buy_order(order, admin=admin)
 
 
+def _is_blnk_settled_status(status_val) -> bool:
+    """Helper to check if a Blnk transaction status indicates terminal settlement."""
+    if isinstance(status_val, str):
+        return status_val.upper() in ["APPLIED", "COMMITTED", "COMPLETED", "APPLIED_IN_FULFILLMENT"]
+    return False
+
+
+def _is_blnk_failed_status(status_val) -> bool:
+    if isinstance(status_val, str):
+        return status_val.upper() in ["REJECTED", "FAILED", "VOID"]
+    return False
+
+
 def complete_buy_order(order, admin=None):
     """Settle a verified buy order on the ledger. Safe to call more than once.
 
@@ -382,15 +398,48 @@ def complete_buy_order(order, admin=None):
     Leg 2: Release USDT from the platform float to the buyer's USDT wallet.
 
     Idempotency: the settlement row is created first inside the transaction, so a
-    duplicated approval finds the existing row and returns without touching Blnk.
+    duplicated approval finds the existing row and updates/checks status without touching Blnk anew.
     """
     platform = PlatformAccount.objects.first()
     if not platform:
         raise RuntimeError("PlatformAccount not found. Run: python manage.py init_platform_account")
 
+    client = BlnkClient()
+
     with db_transaction.atomic():
         locked = Order.objects.select_for_update().get(pk=order.pk)
-        if OrderSettlement.objects.filter(order=locked).exists():
+        settlement = OrderSettlement.objects.filter(order=locked).first()
+
+        if settlement:
+            # Settlement record already exists. Check if status can transition from SETTLING -> COMPLETED
+            if locked.status == Order.SETTLING and settlement.blnk_transaction_refs:
+                refs = settlement.blnk_transaction_refs
+                if len(refs) >= 2 and refs[1]:
+                    txn2_id = refs[1]
+                    try:
+                        poll_data = client.get_transaction(txn2_id)
+                        status2 = poll_data.get("status", "QUEUED")
+                        if _is_blnk_settled_status(status2):
+                            locked.status = Order.COMPLETED
+                            locked.completed_at = timezone.now()
+                            locked.save(update_fields=["status", "completed_at"])
+                            _write_history(locked, method_label(locked.payment_method), locked.phone or "", locked.fee_amount)
+                            log_order_event(
+                                locked, "settled", actor=admin, from_status=Order.SETTLING, to_status=locked.status,
+                                note=f"Blnk transaction {txn2_id} confirmed settled: status={status2}",
+                            )
+                            notify(
+                                locked.user, "success", "Payment confirmed",
+                                f"Your payment for order {locked.reference_number} has been verified. "
+                                f"{locked.usdt_amount} USDT has been credited to your Bitfuse account.",
+                                locked.reference_number,
+                            )
+                    except Exception as exc:
+                        logger.warning(
+                            f"Failed to check Blnk transaction {txn2_id} status for order {locked.reference_number}: {exc}"
+                        )
+                else:
+                    logger.warning(f"Incomplete Blnk transaction references for order {locked.reference_number}: {refs}")
             return locked
 
         settlement = OrderSettlement.objects.create(
@@ -403,7 +452,6 @@ def complete_buy_order(order, admin=None):
         locked.status = Order.SETTLING
         locked.save(update_fields=["status"])
 
-        client = BlnkClient()
         _, usdt_wallet = ensure_user_wallets(locked.user)
         precision_mwk = settings.CURRENCY_PRECISION["MWK"]
         precision_usdt = settings.CURRENCY_PRECISION["USDT"]
@@ -431,57 +479,78 @@ def complete_buy_order(order, admin=None):
                 description=f"USDT released for order {locked.reference_number}",
             )
 
-            # Verify Blnk transaction lifecycle status
             txn1_id = txn1.get("transaction_id")
             txn2_id = txn2.get("transaction_id")
             status1 = txn1.get("status", "QUEUED")
             status2 = txn2.get("status", "QUEUED")
 
-            # Poll/verify until terminal state if queued
-            if status2 in ["QUEUED", "INFLIGHT"]:
+            logger.info(
+                f"[BUY] order={locked.reference_number} "
+                f"user={locked.user.username} (id={locked.user.id}) "
+                f"amount_usdt={locked.usdt_amount} "
+                f"source_balance_id={platform.usdt_float_balance_id} "
+                f"destination_balance_id={usdt_wallet.blnk_balance_id} "
+                f"precision={precision_usdt} "
+                f"reference={locked.reference_number}-usdt-out "
+                f"BLNK transaction_id={txn2_id} "
+                f"BLNK initial_status={status2}"
+            )
+
+            refs = [txn1_id, txn2_id]
+            settlement.blnk_transaction_refs = refs
+            settlement.save(update_fields=["blnk_transaction_refs"])
+            locked.blnk_transaction_refs = refs
+            locked.save(update_fields=["blnk_transaction_refs"])
+
+            # Poll Blnk if status is queued/inflight
+            if isinstance(status2, str) and status2.upper() in ["QUEUED", "INFLIGHT", "PENDING"]:
                 for _ in range(5):
                     time.sleep(0.3)
                     poll_data = client.get_transaction(txn2_id)
                     status2 = poll_data.get("status", status2)
-                    if status2 not in ["QUEUED", "INFLIGHT"]:
+                    if isinstance(status2, str) and status2.upper() not in ["QUEUED", "INFLIGHT", "PENDING"]:
                         break
 
-            # If transaction failed or rejected on Blnk, raise OrderError so order is not marked completed
-            if status2 in ["REJECTED", "FAILED"]:
+            if _is_blnk_failed_status(status2):
                 settlement.delete()
                 locked.status = Order.PAYMENT_VERIFIED
                 locked.save(update_fields=["status"])
                 raise OrderError(f"Blnk transaction {txn2_id} failed with status: {status2}")
 
+            if _is_blnk_settled_status(status2):
+                locked.status = Order.COMPLETED
+                locked.completed_at = timezone.now()
+                locked.save(update_fields=["status", "completed_at"])
+
+                _write_history(locked, method_label(locked.payment_method), locked.phone or "", locked.fee_amount)
+                log_order_event(
+                    locked, "settled", actor=admin, from_status=Order.SETTLING, to_status=locked.status,
+                    note=f"Blnk transactions: {', '.join(refs)}",
+                )
+                notify(
+                    locked.user, "success", "Payment confirmed",
+                    f"Your payment for order {locked.reference_number} has been verified. "
+                    f"{locked.usdt_amount} USDT has been credited to your Bitfuse account.",
+                    locked.reference_number,
+                )
+            else:
+                log_order_event(
+                    locked, "settling_queued", actor=admin, from_status=Order.PAYMENT_VERIFIED, to_status=Order.SETTLING,
+                    note=f"Blnk transaction {txn2_id} queued (status: {status2}). Waiting for worker processing.",
+                )
+                notify(
+                    locked.user, "pending", "Payment verified — processing credit",
+                    f"Your payment for order {locked.reference_number} was verified and is being processed in the ledger.",
+                    locked.reference_number,
+                )
+
         except Exception as exc:
-            # If Blnk transaction creation fails, rollback DB transaction so order is NOT marked as completed
-            if OrderSettlement.objects.filter(pk=settlement.pk).exists():
+            if not settlement.blnk_transaction_refs:
                 settlement.delete()
-            locked.status = Order.PAYMENT_VERIFIED
-            locked.save(update_fields=["status"])
-            raise OrderError(f"Failed to credit USDT in Blnk ledger: {str(exc)}")
+                locked.status = Order.PAYMENT_VERIFIED
+                locked.save(update_fields=["status"])
+            raise exc
 
-        refs = [txn1_id, txn2_id]
-        settlement.blnk_transaction_refs = refs
-        settlement.save(update_fields=["blnk_transaction_refs"])
-
-        locked.status = Order.COMPLETED
-        locked.completed_at = timezone.now()
-        locked.blnk_transaction_refs = refs
-        locked.save(update_fields=["status", "completed_at", "blnk_transaction_refs"])
-
-        _write_history(locked, method_label(locked.payment_method), locked.phone or "", locked.fee_amount)
-        log_order_event(
-            locked, "settled", actor=admin, from_status=Order.SETTLING, to_status=locked.status,
-            note=f"Blnk transactions: {', '.join(refs)}",
-        )
-
-    notify(
-        locked.user, "success", "Payment confirmed",
-        f"Your payment for order {locked.reference_number} has been verified. "
-        f"{locked.usdt_amount} USDT has been credited to your Bitfuse account.",
-        locked.reference_number,
-    )
     order.refresh_from_db()
     return locked
 
