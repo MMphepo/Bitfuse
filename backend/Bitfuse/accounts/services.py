@@ -48,36 +48,23 @@ def ensure_user_wallets(user: User) -> tuple[Wallet, Wallet]:
 
 
 def fetch_wallet_balance(user: User) -> dict:
-    """Return real numeric Blnk balances for a user: {MWK: Decimal, USDT: Decimal}."""
+    """Return real numeric Blnk balances for a user: {MWK: Decimal, USDT: Decimal}.
+
+    Raises exception if Blnk is unreachable so views can differentiate Blnk outages from 0 balances.
+    """
     mwk_wallet, usdt_wallet = ensure_user_wallets(user)
     client = BlnkClient()
 
     def _amount(balance_id: str, precision: int) -> Decimal:
-        try:
-            data = client.get_balance(balance_id)
-            return (Decimal(str(data["balance"])) / Decimal(precision)).quantize(
-                Decimal("0.01") if precision == settings.CURRENCY_PRECISION["MWK"] else Decimal("0.000001")
-            )
-        except Exception:
-            return Decimal("0")
+        data = client.get_balance(balance_id)
+        return (Decimal(str(data["balance"])) / Decimal(precision)).quantize(
+            Decimal("0.01") if precision == settings.CURRENCY_PRECISION["MWK"] else Decimal("0.000001")
+        )
 
     balances = {
         "MWK": _amount(mwk_wallet.blnk_balance_id, settings.CURRENCY_PRECISION["MWK"]),
         "USDT": _amount(usdt_wallet.blnk_balance_id, settings.CURRENCY_PRECISION["USDT"]),
     }
-
-    # Proactive Seeder top-up check for seeded users (prevent infinite recursion using SEEDING_IN_PROGRESS flag)
-    import os
-    if user.username.startswith("seeded_user_") and balances["USDT"] < Decimal("150.00") and os.environ.get("SEEDING_IN_PROGRESS") != "True":
-        try:
-            os.environ["SEEDING_IN_PROGRESS"] = "True"
-            from django.core.management import call_command
-            call_command("seed_users")
-            balances["USDT"] = _amount(usdt_wallet.blnk_balance_id, settings.CURRENCY_PRECISION["USDT"])
-        except Exception as e:
-            logger.error(f"Failed to run seed_users on-demand for {user.username}: {str(e)}")
-        finally:
-            os.environ["SEEDING_IN_PROGRESS"] = "False"
 
     return balances
 
@@ -107,107 +94,35 @@ def ensure_frozen_balance() -> PlatformAccount:
 def get_or_create_platform_account(client=None) -> PlatformAccount:
     """Idempotently fetch or create the PlatformAccount ledger and balance mapping.
 
-    - Resolves from the database first.
-    - If missing from DB, attempts to reconcile with existing Blnk ledger/balances.
-    - If completely missing from Blnk, creates them once.
-    - Uses database locking to prevent concurrent race conditions.
+    - Directly returns the existing PlatformAccount row from DB if present.
+    - Creates missing platform ledger and balances once only when DB row is absent.
     """
-    # Use select_for_update to serialize concurrent requests and avoid race conditions
     platform = PlatformAccount.objects.select_for_update().first()
     if platform:
-        # Verify it still exists in Blnk if not testing
-        if getattr(settings, "TESTING", False):
-            return platform
-
-        # Test if the balance ID actually exists in Blnk
-        if not client:
-            client = BlnkClient()
-        try:
-            client.get_balance(platform.usdt_float_balance_id)
-            return platform
-        except Exception:
-            # If lookup fails, we can proceed to reconcile or recreate
-            pass
+        return platform
 
     if not client:
         client = BlnkClient()
 
-    # Find existing platform ledger/balances in Blnk (reconciliation)
-    ledger_id = None
-    mwk_float_id = None
-    usdt_float_id = None
-    mwk_contra_id = None
-    usdt_contra_id = None
-    usdt_frozen_id = None
-
     try:
-        ledgers = client.list_ledgers()
-        # Look for ledger named "Bitfuse Platform Account"
-        for led in ledgers:
-            if led.get("name") == "Bitfuse Platform Account":
-                ledger_id = led.get("ledger_id")
-                break
+        ledger = client.create_ledger("Bitfuse Platform Account")
+        ledger_id = ledger["ledger_id"]
     except Exception as e:
-        logger.error(f"Error listing ledgers from Blnk: {str(e)}")
+        raise RuntimeError(f"Failed to create Blnk platform ledger: {str(e)}")
 
-    if ledger_id:
-        # If ledger exists, find existing balances
-        try:
-            balances = client.list_balances()
-            for bal in balances:
-                if bal.get("ledger_id") == ledger_id:
-                    meta = bal.get("meta_data", {}) or {}
-                    role = meta.get("role")
-                    if role == "platform_mwk_float":
-                        mwk_float_id = bal.get("balance_id")
-                    elif role == "platform_usdt_float":
-                        usdt_float_id = bal.get("balance_id")
-                    elif role == "external_mwk_contra":
-                        mwk_contra_id = bal.get("balance_id")
-                    elif role == "external_usdt_contra":
-                        usdt_contra_id = bal.get("balance_id")
-                    elif role == "platform_usdt_frozen":
-                        usdt_frozen_id = bal.get("balance_id")
-        except Exception as e:
-            logger.error(f"Error listing balances from Blnk: {str(e)}")
+    mwk_float_id = client.create_balance(ledger_id, "MWK", {"role": "platform_mwk_float"})["balance_id"]
+    usdt_float_id = client.create_balance(ledger_id, "USDT", {"role": "platform_usdt_float"})["balance_id"]
+    mwk_contra_id = client.create_balance(ledger_id, "MWK", {"role": "external_mwk_contra"})["balance_id"]
+    usdt_contra_id = client.create_balance(ledger_id, "USDT", {"role": "external_usdt_contra"})["balance_id"]
+    usdt_frozen_id = client.create_balance(ledger_id, "USDT", {"role": "platform_usdt_frozen"})["balance_id"]
 
-    # If ledger doesn't exist, create it
-    if not ledger_id:
-        try:
-            ledger = client.create_ledger("Bitfuse Platform Account")
-            ledger_id = ledger["ledger_id"]
-        except Exception as e:
-            raise RuntimeError(f"Failed to create Blnk platform ledger: {str(e)}")
-
-    # Create missing balances as needed
-    if not mwk_float_id:
-        mwk_float_id = client.create_balance(ledger_id, "MWK", {"role": "platform_mwk_float"})["balance_id"]
-    if not usdt_float_id:
-        usdt_float_id = client.create_balance(ledger_id, "USDT", {"role": "platform_usdt_float"})["balance_id"]
-    if not mwk_contra_id:
-        mwk_contra_id = client.create_balance(ledger_id, "MWK", {"role": "external_mwk_contra"})["balance_id"]
-    if not usdt_contra_id:
-        usdt_contra_id = client.create_balance(ledger_id, "USDT", {"role": "external_usdt_contra"})["balance_id"]
-    if not usdt_frozen_id:
-        usdt_frozen_id = client.create_balance(ledger_id, "USDT", {"role": "platform_usdt_frozen"})["balance_id"]
-
-    # Persist or update the PlatformAccount mapping
-    if platform:
-        platform.ledger_id = ledger_id
-        platform.mwk_float_balance_id = mwk_float_id
-        platform.usdt_float_balance_id = usdt_float_id
-        platform.mwk_external_contra_id = mwk_contra_id
-        platform.usdt_external_contra_id = usdt_contra_id
-        platform.usdt_frozen_balance_id = usdt_frozen_id
-        platform.save()
-    else:
-        platform = PlatformAccount.objects.create(
-            ledger_id=ledger_id,
-            mwk_float_balance_id=mwk_float_id,
-            usdt_float_balance_id=usdt_float_id,
-            mwk_external_contra_id=mwk_contra_id,
-            usdt_external_contra_id=usdt_contra_id,
-            usdt_frozen_balance_id=usdt_frozen_id,
-        )
+    platform = PlatformAccount.objects.create(
+        ledger_id=ledger_id,
+        mwk_float_balance_id=mwk_float_id,
+        usdt_float_balance_id=usdt_float_id,
+        mwk_external_contra_id=mwk_contra_id,
+        usdt_external_contra_id=usdt_contra_id,
+        usdt_frozen_balance_id=usdt_frozen_id,
+    )
 
     return platform

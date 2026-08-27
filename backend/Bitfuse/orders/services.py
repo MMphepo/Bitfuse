@@ -407,27 +407,34 @@ def complete_buy_order(order, admin=None):
         precision_mwk = settings.CURRENCY_PRECISION["MWK"]
         precision_usdt = settings.CURRENCY_PRECISION["USDT"]
 
-        # Leg 1: cash-in from mobile money (amount + fee)
-        txn1 = client.create_transaction(
-            amount=int(locked.total_payable_mwk * precision_mwk),
-            currency="MWK",
-            precision=precision_mwk,
-            reference=f"{locked.reference_number}-cash-in",
-            source=platform.mwk_external_contra_id,
-            destination=platform.mwk_float_balance_id,
-            description=f"Mobile money payment received for order {locked.reference_number}",
-        )
+        try:
+            # Leg 1: cash-in from mobile money (amount + fee)
+            txn1 = client.create_transaction(
+                amount=int(locked.total_payable_mwk * precision_mwk),
+                currency="MWK",
+                precision=precision_mwk,
+                reference=f"{locked.reference_number}-cash-in",
+                source=platform.mwk_external_contra_id,
+                destination=platform.mwk_float_balance_id,
+                description=f"Mobile money payment received for order {locked.reference_number}",
+            )
 
-        # Leg 2: release USDT to buyer
-        txn2 = client.create_transaction(
-            amount=int(locked.usdt_amount * precision_usdt),
-            currency="USDT",
-            precision=precision_usdt,
-            reference=f"{locked.reference_number}-usdt-out",
-            source=platform.usdt_float_balance_id,
-            destination=usdt_wallet.blnk_balance_id,
-            description=f"USDT released for order {locked.reference_number}",
-        )
+            # Leg 2: release USDT to buyer
+            txn2 = client.create_transaction(
+                amount=int(locked.usdt_amount * precision_usdt),
+                currency="USDT",
+                precision=precision_usdt,
+                reference=f"{locked.reference_number}-usdt-out",
+                source=platform.usdt_float_balance_id,
+                destination=usdt_wallet.blnk_balance_id,
+                description=f"USDT released for order {locked.reference_number}",
+            )
+        except Exception as exc:
+            # If Blnk transaction fails, rollback DB transaction so order is NOT marked as completed
+            settlement.delete()
+            locked.status = Order.PAYMENT_VERIFIED
+            locked.save(update_fields=["status"])
+            raise OrderError(f"Failed to credit USDT in Blnk ledger: {str(exc)}")
 
         refs = [txn1["transaction_id"], txn2["transaction_id"]]
         settlement.blnk_transaction_refs = refs

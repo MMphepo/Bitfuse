@@ -2,12 +2,9 @@ from django.db import migrations
 from django.core.management import call_command
 
 
-def seed_users_on_build(apps, schema_editor):
-    try:
-        call_command("seed_users")
-    except Exception as e:
-        # We catch exceptions to prevent build/migrate from breaking if there are transient database setup/networking issues
-        print(f"Warning: Seed users on build failed: {str(e)}")
+def noop_seed(apps, schema_editor):
+    # Seeding must be explicitly run via `python manage.py seed_users` command.
+    pass
 
 
 class Migration(migrations.Migration):
@@ -19,5 +16,5 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RunPython(seed_users_on_build, reverse_code=migrations.RunPython.noop),
+        migrations.RunPython(noop_seed, reverse_code=migrations.RunPython.noop),
     ]
