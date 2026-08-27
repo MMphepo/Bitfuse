@@ -86,7 +86,7 @@ class Command(BaseCommand):
                         amount=raw_fund,
                         currency="USDT",
                         precision=1000000,
-                        reference=f"seed-fund-platform-float-{uuid.uuid4()}",
+                        reference="seed-fund-platform-float-initial",
                         source=platform.usdt_external_contra_id,
                         destination=platform.usdt_float_balance_id,
                         description="Seed funding of platform USDT float balance",
@@ -177,7 +177,8 @@ class Command(BaseCommand):
 
                 try:
                     if not is_testing:
-                        tx_ref = f"seed-credit-{user.id}-{raw_diff}-{uuid.uuid4()}"
+                        # Deterministic, idempotent reference based on user ID and target amount
+                        tx_ref = f"seed-credit-{user.id}-target-150-usdt"
                         tx = blnk_client.create_transaction(
                             amount=raw_diff,
                             currency="USDT",
