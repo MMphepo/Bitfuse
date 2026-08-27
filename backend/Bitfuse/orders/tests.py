@@ -48,8 +48,10 @@ class BuyPaymentFlowTests(TestCase):
 
         self.blnk = mock.patch("orders.services.BlnkClient").start()
         self.blnk.return_value.create_transaction.side_effect = [
-            {"transaction_id": "blnk-1"}, {"transaction_id": "blnk-2"},
+            {"transaction_id": "blnk-1", "status": "APPLIED"},
+            {"transaction_id": "blnk-2", "status": "APPLIED"},
         ]
+        self.blnk.return_value.get_transaction.return_value = {"status": "APPLIED"}
         mock.patch(
             "orders.services.ensure_user_wallets",
             return_value=(
@@ -228,3 +230,25 @@ class BuyPaymentFlowTests(TestCase):
         order.refresh_from_db()
         self.assertEqual(response.status_code, 400)
         self.assertEqual(order.status, Order.PAYMENT_SUBMITTED)
+
+    def test_queued_transaction_remains_settling_until_applied(self):
+        order = self.create_order()
+        submit_payment(order, self.user, "CM123456789")
+
+        self.blnk.return_value.create_transaction.side_effect = [
+            {"transaction_id": "blnk-1", "status": "QUEUED"},
+            {"transaction_id": "blnk-2", "status": "QUEUED"},
+        ]
+        self.blnk.return_value.get_transaction.return_value = {"status": "QUEUED"}
+
+        verify_payment(order, self.admin)
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.SETTLING)
+
+        # Now simulate Blnk worker finishing queue processing to APPLIED
+        self.blnk.return_value.get_transaction.return_value = {"status": "APPLIED"}
+        response = self.client.get(reverse("order-detail", args=[order.id]))
+        self.assertEqual(response.status_code, 200)
+
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.COMPLETED)
