@@ -7,6 +7,7 @@ database records the business outcome.
 
 import random
 import string
+import time
 from datetime import timedelta
 from decimal import Decimal
 
@@ -429,14 +430,38 @@ def complete_buy_order(order, admin=None):
                 destination=usdt_wallet.blnk_balance_id,
                 description=f"USDT released for order {locked.reference_number}",
             )
+
+            # Verify Blnk transaction lifecycle status
+            txn1_id = txn1.get("transaction_id")
+            txn2_id = txn2.get("transaction_id")
+            status1 = txn1.get("status", "QUEUED")
+            status2 = txn2.get("status", "QUEUED")
+
+            # Poll/verify until terminal state if queued
+            if status2 in ["QUEUED", "INFLIGHT"]:
+                for _ in range(5):
+                    time.sleep(0.3)
+                    poll_data = client.get_transaction(txn2_id)
+                    status2 = poll_data.get("status", status2)
+                    if status2 not in ["QUEUED", "INFLIGHT"]:
+                        break
+
+            # If transaction failed or rejected on Blnk, raise OrderError so order is not marked completed
+            if status2 in ["REJECTED", "FAILED"]:
+                settlement.delete()
+                locked.status = Order.PAYMENT_VERIFIED
+                locked.save(update_fields=["status"])
+                raise OrderError(f"Blnk transaction {txn2_id} failed with status: {status2}")
+
         except Exception as exc:
-            # If Blnk transaction fails, rollback DB transaction so order is NOT marked as completed
-            settlement.delete()
+            # If Blnk transaction creation fails, rollback DB transaction so order is NOT marked as completed
+            if OrderSettlement.objects.filter(pk=settlement.pk).exists():
+                settlement.delete()
             locked.status = Order.PAYMENT_VERIFIED
             locked.save(update_fields=["status"])
             raise OrderError(f"Failed to credit USDT in Blnk ledger: {str(exc)}")
 
-        refs = [txn1["transaction_id"], txn2["transaction_id"]]
+        refs = [txn1_id, txn2_id]
         settlement.blnk_transaction_refs = refs
         settlement.save(update_fields=["blnk_transaction_refs"])
 

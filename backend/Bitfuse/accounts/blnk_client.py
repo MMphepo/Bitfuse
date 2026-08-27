@@ -113,6 +113,11 @@ class BlnkClient:
         logger.debug(f"[BLNK] Fetching balance: balance_id={balance_id!r}")
         return self._request("GET", f"/balances/{balance_id}")
 
+    def get_transaction(self, transaction_id: str):
+        """Fetch a transaction's current status and details from Blnk."""
+        logger.debug(f"[BLNK] Fetching transaction: transaction_id={transaction_id!r}")
+        return self._request("GET", f"/transactions/{transaction_id}")
+
     def list_ledgers(self):
         """Fetch all ledgers from Blnk."""
         logger.debug("[BLNK] Listing ledgers")
