@@ -172,3 +172,25 @@ class BlnkIntegrationTests(TransactionTestCase):
 
         self.assertEqual(res1.id, res2.id)
         self.assertEqual(PlatformAccount.objects.count(), 1)
+
+    def test_8_blnk_client_retry_on_429(self):
+        """BlnkClient retries with backoff when HTTP 429 is encountered."""
+        from accounts.blnk_client import BlnkClient
+        import requests
+
+        client = BlnkClient(max_retries=2, backoff_factor=0.01)
+
+        resp_429 = mock.MagicMock()
+        resp_429.status_code = 429
+        resp_429.headers = {}
+        resp_429.raise_for_status.side_effect = requests.HTTPError("429 Too Many Requests")
+
+        resp_200 = mock.MagicMock()
+        resp_200.status_code = 200
+        resp_200.content = b'{"status": "APPLIED"}'
+        resp_200.json.return_value = {"status": "APPLIED"}
+
+        with mock.patch("requests.request", side_effect=[resp_429, resp_200]) as mock_req:
+            res = client.get_transaction("tx-123")
+            self.assertEqual(res, {"status": "APPLIED"})
+            self.assertEqual(mock_req.call_count, 2)
