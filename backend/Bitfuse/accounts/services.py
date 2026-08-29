@@ -57,7 +57,23 @@ def fetch_wallet_balance(user: User) -> dict:
 
     def _amount(balance_id: str, precision: int) -> Decimal:
         data = client.get_balance(balance_id)
-        return (Decimal(str(data["balance"])) / Decimal(precision)).quantize(
+        logger.debug(f"[BLNK] Balance payload for {balance_id}: {data}")
+
+        # Blnk response schema can represent balance under different keys:
+        # 'balance', 'available_balance', 'current_balance', or calculated from credit/debit
+        raw_balance = None
+        for key in ["balance", "available_balance", "current_balance"]:
+            if key in data and data[key] is not None:
+                raw_balance = data[key]
+                break
+
+        if raw_balance is None:
+            # Fall back to (credit_balance - debit_balance) if present
+            credit = data.get("credit_balance", 0) or 0
+            debit = data.get("debit_balance", 0) or 0
+            raw_balance = credit - debit
+
+        return (Decimal(str(raw_balance)) / Decimal(precision)).quantize(
             Decimal("0.01") if precision == settings.CURRENCY_PRECISION["MWK"] else Decimal("0.000001")
         )
 
