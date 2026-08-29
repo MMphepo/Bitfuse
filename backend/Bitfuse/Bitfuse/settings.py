@@ -155,6 +155,26 @@ TNM_MPAMBA_BUSINESS_CODE = config("TNM_MPAMBA_BUSINESS_CODE", default="")
 TNM_MPAMBA_ACCOUNT_NAME = config("TNM_MPAMBA_ACCOUNT_NAME", default="Bitfuse")
 
 CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_HEADERS = [
+    "accept",
+    "accept-encoding",
+    "authorization",
+    "content-type",
+    "dnt",
+    "origin",
+    "user-agent",
+    "x-csrftoken",
+    "x-requested-with",
+]
+CORS_ALLOWED_ORIGINS = [
+    "https://bitfuse-mw.vercel.app",
+    "http://localhost:3000",
+    "http://localhost:5173",
+]
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^https://.*\.vercel\.app$",
+]
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
