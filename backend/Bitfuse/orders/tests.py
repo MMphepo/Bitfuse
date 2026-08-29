@@ -148,9 +148,36 @@ class BuyPaymentFlowTests(TestCase):
 
         order.refresh_from_db()
         self.assertEqual(order.status, Order.COMPLETED)
+
+    def test_admin_approve_payment_action_messages_warning_when_settling(self):
+        from orders.admin import OrderAdmin
+        from django.contrib.admin.sites import AdminSite
+
+        order = self.create_order()
+        submit_payment(order, self.user, "CM123456789")
+
+        self.blnk.return_value.create_transaction.side_effect = [
+            {"transaction_id": "blnk-1", "status": "QUEUED"},
+            {"transaction_id": "blnk-2", "status": "QUEUED"},
+        ]
+        self.blnk.return_value.get_transaction.return_value = {"status": "QUEUED"}
+
+        order_admin = OrderAdmin(Order, AdminSite())
+        request = mock.MagicMock()
+        request.user = self.admin
+
+        with mock.patch.object(order_admin, "message_user") as mock_message_user:
+            order_admin.approve_payment(request, Order.objects.filter(pk=order.pk))
+            mock_message_user.assert_called_once()
+            args, kwargs = mock_message_user.call_args
+            self.assertIn("QUEUED in Blnk", args[1])
+
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.SETTLING)
         self.assertEqual(OrderSettlement.objects.filter(order=order).count(), 1)
         self.assertEqual(self.blnk.return_value.create_transaction.call_count, 2)
-        self.assertEqual(Transaction.objects.filter(reference=order.reference_number).count(), 1)
+        # Transaction history row is created when order moves to COMPLETED, so 0 for SETTLING
+        self.assertEqual(Transaction.objects.filter(reference=order.reference_number).count(), 0)
 
     def test_settlement_credits_the_order_amount_and_records_the_ledger_refs(self):
         order = self.create_order()

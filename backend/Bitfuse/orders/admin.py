@@ -34,7 +34,25 @@ class OrderAdmin(admin.ModelAdmin):
     def approve_payment(self, request, queryset):
         for order in queryset.filter(order_type="buy"):
             try:
-                verify_payment(order, request.user)
+                updated_order = verify_payment(order, request.user)
+                if updated_order.status == "completed":
+                    self.message_user(
+                        request,
+                        f"Order {order.reference_number} successfully verified and completed (USDT credited).",
+                        level=messages.SUCCESS,
+                    )
+                elif updated_order.status == "settling":
+                    self.message_user(
+                        request,
+                        f"Order {order.reference_number} payment verified, but settlement is QUEUED in Blnk (status: SETTLING). USDT will be credited once Blnk completes processing.",
+                        level=messages.WARNING,
+                    )
+                else:
+                    self.message_user(
+                        request,
+                        f"Order {order.reference_number} updated to status: {updated_order.status}.",
+                        level=messages.INFO,
+                    )
             except (OrderError, RuntimeError) as exc:
                 self.message_user(request, f"{order.reference_number}: {exc}", level=messages.ERROR)
 
