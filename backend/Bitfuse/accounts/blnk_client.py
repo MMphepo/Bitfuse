@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 class BlnkClient:
     """Robust, central client for Blnk Ledger with HTTP 429 rate limit backoff and retries."""
 
-    def __init__(self, max_retries: int = 4, backoff_factor: float = 0.5):
+    def __init__(self, max_retries: int = 5, backoff_factor: float = 1.0):
         self.base_url = settings.BLNK_BASE_URL.rstrip('/') if settings.BLNK_BASE_URL else ""
         self.headers = {"Content-Type": "application/json"}
         if getattr(settings, "BLNK_SECRET_KEY", None):

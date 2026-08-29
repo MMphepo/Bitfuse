@@ -502,12 +502,18 @@ def complete_buy_order(order, admin=None):
             locked.blnk_transaction_refs = refs
             locked.save(update_fields=["blnk_transaction_refs"])
 
-            # Poll Blnk if status is queued/inflight
+            # Poll Blnk if status is queued/inflight with gentle delay to avoid HTTP 429 rate limits
             if isinstance(status2, str) and status2.upper() in ["QUEUED", "INFLIGHT", "PENDING"]:
-                for _ in range(5):
-                    time.sleep(0.3)
-                    poll_data = client.get_transaction(txn2_id)
-                    status2 = poll_data.get("status", status2)
+                for _ in range(3):
+                    time.sleep(1.0)
+                    try:
+                        poll_data = client.get_transaction(txn2_id)
+                        status2 = poll_data.get("status", status2)
+                    except Exception as poll_exc:
+                        logger.warning(
+                            f"Blnk status check encounter error for transaction {txn2_id}: {poll_exc}"
+                        )
+                        break
                     if isinstance(status2, str) and status2.upper() not in ["QUEUED", "INFLIGHT", "PENDING"]:
                         break
 
