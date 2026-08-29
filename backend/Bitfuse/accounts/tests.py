@@ -194,3 +194,26 @@ class BlnkIntegrationTests(TransactionTestCase):
             res = client.get_transaction("tx-123")
             self.assertEqual(res, {"status": "APPLIED"})
             self.assertEqual(mock_req.call_count, 2)
+
+    def test_9_fetch_wallet_balance_resolves_different_balance_keys(self):
+        """fetch_wallet_balance correctly parses available_balance or credit-debit fallbacks."""
+        from accounts.services import fetch_wallet_balance
+
+        user = User.objects.create_user(username="bal_test", email="bal@example.com", phone_number="+265999000111")
+        Wallet.objects.create(user=user, currency="MWK", blnk_balance_id="mwk-bal-id")
+        Wallet.objects.create(user=user, currency="USDT", blnk_balance_id="usdt-bal-id")
+
+        mock_client = mock.MagicMock()
+        mock_client.get_balance.side_effect = [
+            {"available_balance": 500000},  # MWK
+            {"credit_balance": 10000000, "debit_balance": 2000000},  # USDT: 8000000 / 1e6 = 8.000000
+        ]
+
+        with mock.patch("accounts.services.BlnkClient", return_value=mock_client), \
+             mock.patch("accounts.services.ensure_user_wallets", return_value=(
+                 Wallet.objects.get(user=user, currency="MWK"),
+                 Wallet.objects.get(user=user, currency="USDT"),
+             )):
+            balances = fetch_wallet_balance(user)
+            self.assertEqual(balances["MWK"], Decimal("5000.00"))
+            self.assertEqual(balances["USDT"], Decimal("8.000000"))
