@@ -205,8 +205,8 @@ class BlnkIntegrationTests(TransactionTestCase):
 
         mock_client = mock.MagicMock()
         mock_client.get_balance.side_effect = [
-            {"available_balance": 500000},  # MWK
-            {"credit_balance": 10000000, "debit_balance": 2000000},  # USDT: 8000000 / 1e6 = 8.000000
+            {"available_balance": {"amount": 500000}},  # MWK nested dict
+            {"balance": 0, "credit_balance": 10000000, "debit_balance": 2000000},  # USDT fallback
         ]
 
         with mock.patch("accounts.services.BlnkClient", return_value=mock_client), \
