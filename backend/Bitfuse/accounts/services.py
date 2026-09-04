@@ -55,25 +55,45 @@ def fetch_wallet_balance(user: User) -> dict:
     mwk_wallet, usdt_wallet = ensure_user_wallets(user)
     client = BlnkClient()
 
+    def _extract_val(val) -> Decimal | None:
+        if val is None:
+            return None
+        if isinstance(val, (int, float, str, Decimal)):
+            return Decimal(str(val))
+        if isinstance(val, dict):
+            for subkey in ["amount", "balance", "available", "value", "current"]:
+                if subkey in val and val[subkey] is not None:
+                    res = _extract_val(val[subkey])
+                    if res is not None:
+                        return res
+        return None
+
     def _amount(balance_id: str, precision: int) -> Decimal:
         data = client.get_balance(balance_id)
         logger.debug(f"[BLNK] Balance payload for {balance_id}: {data}")
 
-        # Blnk response schema can represent balance under different keys:
-        # 'balance', 'available_balance', 'current_balance', or calculated from credit/debit
         raw_balance = None
+        # Check standard fields: balance, available_balance, current_balance
         for key in ["balance", "available_balance", "current_balance"]:
             if key in data and data[key] is not None:
-                raw_balance = data[key]
-                break
+                parsed = _extract_val(data[key])
+                if parsed is not None:
+                    raw_balance = parsed
+                    break
+
+        if raw_balance is None or raw_balance == Decimal("0"):
+            # Fallback to credit_balance - debit_balance + inflight_balance if present
+            credit = _extract_val(data.get("credit_balance")) or Decimal("0")
+            debit = _extract_val(data.get("debit_balance")) or Decimal("0")
+            inflight = _extract_val(data.get("inflight_balance")) or Decimal("0")
+            calc = (credit - debit) + inflight
+            if calc != Decimal("0"):
+                raw_balance = calc
 
         if raw_balance is None:
-            # Fall back to (credit_balance - debit_balance) if present
-            credit = data.get("credit_balance", 0) or 0
-            debit = data.get("debit_balance", 0) or 0
-            raw_balance = credit - debit
+            raw_balance = Decimal("0")
 
-        return (Decimal(str(raw_balance)) / Decimal(precision)).quantize(
+        return (raw_balance / Decimal(precision)).quantize(
             Decimal("0.01") if precision == settings.CURRENCY_PRECISION["MWK"] else Decimal("0.000001")
         )
 
