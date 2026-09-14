@@ -135,6 +135,7 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ],
+    "EXCEPTION_HANDLER": "Bitfuse.exceptions.custom_exception_handler",
 }
 
 BLNK_BASE_URL = config("BLNK_BASE_URL")
