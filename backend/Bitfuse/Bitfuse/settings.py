@@ -148,7 +148,7 @@ REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "Bitfuse.exceptions.custom_exception_handler",
 }
 
-BLNK_BASE_URL = config("BLNK_BASE_URL")
+BLNK_BASE_URL = config("BLNK_BASE_URL", default="https://bitfuse-blnk-server-qfn2.onrender.com")
 BLNK_SECRET_KEY = config("BLNK_SECRET_KEY", default="")
 
 CURRENCY_PRECISION = {
