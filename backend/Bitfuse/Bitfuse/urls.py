@@ -20,7 +20,7 @@ from django.urls import include, path
 from django.conf import settings
 from django.conf.urls.static import static
 
-from accounts.views import NotificationListView, NotificationReadView, TransactionListView
+from accounts.views import AdminReconciliationView, NotificationListView, NotificationReadView, TransactionListView
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -29,6 +29,7 @@ urlpatterns = [
     path("api/v1/orders/", include("orders.urls")),
     path("api/v1/withdrawals/", include("withdrawals.urls")),
     path("api/v1/transactions/", TransactionListView.as_view(), name="transactions"),
+    path("api/v1/admin/reconcile/", AdminReconciliationView.as_view(), name="admin-reconcile"),
     path("api/v1/notifications/", NotificationListView.as_view(), name="notifications"),
     path(
         "api/v1/notifications/<uuid:notification_id>/read/",

@@ -217,3 +217,69 @@ class BlnkIntegrationTests(TransactionTestCase):
             balances = fetch_wallet_balance(user)
             self.assertEqual(balances["MWK"], Decimal("5000.00"))
             self.assertEqual(balances["USDT"], Decimal("8.000000"))
+
+    def test_10_p2p_transfer_success_and_idempotency(self):
+        """P2P transfer debits sender, credits recipient, and obeys idempotency."""
+        from accounts.services import perform_p2p_transfer
+        from accounts.models import Transfer
+
+        sender = User.objects.create_user(username="sender1", email="s1@example.com", phone_number="+265999111222")
+        recipient = User.objects.create_user(username="recip1", email="r1@example.com", phone_number="+265999111333")
+
+        Wallet.objects.create(user=sender, currency="USDT", blnk_balance_id="sender-usdt")
+        Wallet.objects.create(user=sender, currency="MWK", blnk_balance_id="sender-mwk")
+        Wallet.objects.create(user=recipient, currency="USDT", blnk_balance_id="recip-usdt")
+        Wallet.objects.create(user=recipient, currency="MWK", blnk_balance_id="recip-mwk")
+
+        mock_blnk_client = mock.MagicMock()
+        mock_blnk_client.create_transaction.return_value = {"transaction_id": "tx-p2p-1"}
+
+        with mock.patch("accounts.services.BlnkClient", return_value=mock_blnk_client), \
+             mock.patch("accounts.services.fetch_wallet_balance", return_value={"USDT": Decimal("100.000000"), "MWK": Decimal("0")}):
+            t1 = perform_p2p_transfer(
+                sender=sender,
+                recipient_username="recip1",
+                amount=Decimal("25.00"),
+                currency="USDT",
+                idempotency_key="idemp-key-100",
+            )
+            self.assertEqual(t1.status, "Completed")
+            self.assertEqual(t1.amount, Decimal("25.00"))
+            self.assertEqual(t1.sender, sender)
+            self.assertEqual(t1.recipient, recipient)
+
+            # Re-submitting with identical idempotency key returns existing transfer without re-executing Blnk txn
+            t2 = perform_p2p_transfer(
+                sender=sender,
+                recipient_username="recip1",
+                amount=Decimal("25.00"),
+                currency="USDT",
+                idempotency_key="idemp-key-100",
+            )
+            self.assertEqual(t1.id, t2.id)
+            self.assertEqual(mock_blnk_client.create_transaction.call_count, 1)
+
+    def test_11_p2p_transfer_validation_errors(self):
+        """P2P transfer rejects self-transfer, non-existent recipient, and insufficient balance."""
+        from accounts.services import perform_p2p_transfer
+
+        sender = User.objects.create_user(username="sender2", email="s2@example.com", phone_number="+265999111444")
+        Wallet.objects.create(user=sender, currency="USDT", blnk_balance_id="sender2-usdt")
+        Wallet.objects.create(user=sender, currency="MWK", blnk_balance_id="sender2-mwk")
+
+        with mock.patch("accounts.services.fetch_wallet_balance", return_value={"USDT": Decimal("10.000000"), "MWK": Decimal("0")}):
+            # Self-transfer
+            with self.assertRaises(ValueError) as exc:
+                perform_p2p_transfer(sender, "sender2", Decimal("5.00"), "USDT", "idemp-self")
+            self.assertIn("Cannot transfer funds to yourself", str(exc.exception))
+
+            # Nonexistent recipient
+            with self.assertRaises(ValueError) as exc:
+                perform_p2p_transfer(sender, "ghost", Decimal("5.00"), "USDT", "idemp-ghost")
+            self.assertIn("Recipient user 'ghost' not found", str(exc.exception))
+
+            # Insufficient balance
+            User.objects.create_user(username="validrecip", email="vr@example.com", phone_number="+265999111555")
+            with self.assertRaises(ValueError) as exc:
+                perform_p2p_transfer(sender, "validrecip", Decimal("50.00"), "USDT", "idemp-overbound")
+            self.assertIn("Insufficient USDT balance", str(exc.exception))

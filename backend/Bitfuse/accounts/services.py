@@ -7,7 +7,9 @@ from django.conf import settings
 from django.db import transaction as db_transaction
 
 from accounts.blnk_client import BlnkClient
-from accounts.models import PlatformAccount, User, Wallet
+import random
+import string
+from accounts.models import Notification, PlatformAccount, Transfer, User, Wallet
 
 logger = logging.getLogger(__name__)
 
@@ -162,3 +164,96 @@ def get_or_create_platform_account(client=None) -> PlatformAccount:
     )
 
     return platform
+
+
+def generate_transfer_reference():
+    while True:
+        ref = "BF-TRF-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
+        if not Transfer.objects.filter(reference=ref).exists():
+            return ref
+
+
+def perform_p2p_transfer(sender: User, recipient_username: str, amount: Decimal, currency: str, idempotency_key: str) -> Transfer:
+    """Perform an internal peer-to-peer balance transfer between Bitfuse users cleanly and atomically."""
+    if not idempotency_key or not str(idempotency_key).strip():
+        raise ValueError("An idempotency_key is required for P2P transfers.")
+
+    existing_transfer = Transfer.objects.filter(idempotency_key=idempotency_key).first()
+    if existing_transfer:
+        return existing_transfer
+
+    if currency not in settings.CURRENCY_PRECISION:
+        raise ValueError(f"Unsupported currency '{currency}'.")
+
+    if amount <= Decimal("0"):
+        raise ValueError("Transfer amount must be strictly positive.")
+
+    # Check precision
+    precision_factor = settings.CURRENCY_PRECISION[currency]
+    expected_places = 2 if currency == "MWK" else 6
+    if amount.as_tuple().exponent < -expected_places:
+        raise ValueError(f"Amount exceeds maximum decimal precision ({expected_places} decimal places).")
+
+    recipient = User.objects.filter(username=recipient_username, is_active=True).first()
+    if not recipient:
+        raise ValueError(f"Recipient user '{recipient_username}' not found.")
+
+    if recipient.pk == sender.pk:
+        raise ValueError("Cannot transfer funds to yourself.")
+
+    balances = fetch_wallet_balance(sender)
+    sender_bal = balances.get(currency, Decimal("0"))
+    if sender_bal < amount:
+        raise ValueError(f"Insufficient {currency} balance. Available: {sender_bal}, requested: {amount}.")
+
+    ref = generate_transfer_reference()
+    sender_mwk, sender_usdt = ensure_user_wallets(sender)
+    recip_mwk, recip_usdt = ensure_user_wallets(recipient)
+
+    sender_blnk_id = sender_mwk.blnk_balance_id if currency == "MWK" else sender_usdt.blnk_balance_id
+    recip_blnk_id = recip_mwk.blnk_balance_id if currency == "MWK" else recip_usdt.blnk_balance_id
+
+    client = BlnkClient()
+    blnk_amount = int(amount * precision_factor)
+
+    try:
+        blnk_txn = client.create_transaction(
+            amount=blnk_amount,
+            currency=currency,
+            precision=precision_factor,
+            reference=f"{ref}-p2p",
+            source=sender_blnk_id,
+            destination=recip_blnk_id,
+            description=f"P2P Transfer from {sender.username} to {recipient.username}",
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Blnk ledger transfer failed: {str(exc)}")
+
+    with db_transaction.atomic():
+        transfer = Transfer.objects.create(
+            reference=ref,
+            sender=sender,
+            recipient=recipient,
+            amount=amount,
+            currency=currency,
+            status="Completed",
+            idempotency_key=idempotency_key,
+            blnk_tx_id=blnk_txn.get("transaction_id", ""),
+        )
+
+        Notification.objects.create(
+            user=sender,
+            level="info",
+            title="Transfer Sent",
+            body=f"You transferred {amount} {currency} to {recipient.username}.",
+            reference=ref,
+        )
+        Notification.objects.create(
+            user=recipient,
+            level="info",
+            title="Transfer Received",
+            body=f"You received {amount} {currency} from {sender.username}.",
+            reference=ref,
+        )
+
+    return transfer

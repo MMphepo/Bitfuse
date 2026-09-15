@@ -155,3 +155,28 @@ class KYCAdminReviewView(APIView):
             KYCSubmissionSerializer(submission).data,
             status=status.HTTP_200_OK,
         )
+
+
+class KYCAdminDocumentDownloadView(APIView):
+    """
+    GET /api/v1/kyc/admin/documents/<submission_id>/<file_type>/
+    Admin-only endpoint to securely retrieve/download uploaded KYC documents (id_front, id_back, selfie).
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request, submission_id, file_type):
+        from django.http import FileResponse, Http404
+
+        if file_type not in ["id_front", "id_back", "selfie"]:
+            return Response({"detail": "Invalid file type requested."}, status=status.HTTP_400_BAD_REQUEST)
+
+        submission = get_object_or_404(KYCSubmission, id=submission_id)
+        file_field = getattr(submission, file_type, None)
+
+        if not file_field or not file_field.name:
+            raise Http404("Document not found.")
+
+        try:
+            return FileResponse(file_field.open("rb"), content_type="image/jpeg")
+        except Exception as exc:
+            return Response({"detail": f"Could not read document: {str(exc)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

@@ -149,3 +149,28 @@ class Rate(models.Model):
 
     def __str__(self):
         return f"Buy: {self.buy_rate} / Sell: {self.sell_rate}"
+
+
+class Transfer(models.Model):
+    STATUS_CHOICES = [
+        ("Pending", "Pending"),
+        ("Completed", "Completed"),
+        ("Failed", "Failed"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    reference = models.CharField(max_length=50, unique=True)
+    sender = models.ForeignKey(User, on_delete=models.CASCADE, related_name="sent_transfers")
+    recipient = models.ForeignKey(User, on_delete=models.CASCADE, related_name="received_transfers")
+    amount = models.DecimalField(max_digits=18, decimal_places=6)
+    currency = models.CharField(max_length=10, default="USDT")
+    status = models.CharField(max_length=15, choices=STATUS_CHOICES, default="Pending")
+    idempotency_key = models.CharField(max_length=100, unique=True)
+    blnk_tx_id = models.CharField(max_length=100, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Transfer {self.reference}: {self.sender.username} -> {self.recipient.username} ({self.amount} {self.currency})"
