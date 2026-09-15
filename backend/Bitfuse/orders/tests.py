@@ -149,6 +149,24 @@ class BuyPaymentFlowTests(TestCase):
         order.refresh_from_db()
         self.assertEqual(order.status, Order.COMPLETED)
 
+    def test_buy_completion_case_insensitive_and_lowercase_blnk_status(self):
+        """Regression test: verify buy order completes when Blnk returns status in lowercase or mixed case (e.g., 'applied', 'applied_in_fulfillment')."""
+        order = self.create_order()
+        submit_payment(order, self.user, "CM999888777")
+
+        self.blnk.return_value.create_transaction.side_effect = [
+            {"transaction_id": "blnk-lc-1", "status": "applied"},
+            {"transaction_id": "blnk-lc-2", "status": "applied_in_fulfillment"},
+        ]
+        self.blnk.return_value.get_transaction.return_value = {"status": "applied"}
+
+        verify_payment(order, self.admin)
+        order.refresh_from_db()
+
+        self.assertEqual(order.status, Order.COMPLETED)
+        self.assertIsNotNone(order.completed_at)
+        self.assertTrue(Transaction.objects.filter(reference=order.reference_number, status="Completed").exists())
+
     def test_admin_approve_payment_action_messages_warning_when_settling(self):
         from orders.admin import OrderAdmin
         from django.contrib.admin.sites import AdminSite
