@@ -380,13 +380,17 @@ def verify_payment(order, admin, received_amount=None, note=""):
 def _is_blnk_settled_status(status_val) -> bool:
     """Helper to check if a Blnk transaction status indicates terminal settlement."""
     if isinstance(status_val, str):
-        return status_val.upper() in ["APPLIED", "COMMITTED", "COMPLETED", "APPLIED_IN_FULFILLMENT"]
+        return status_val.upper() in ["APPLIED", "COMMITTED", "COMPLETED", "APPLIED_IN_FULFILLMENT", "SUCCESS", "SUCCESSFUL"]
+    if isinstance(status_val, dict):
+        return _is_blnk_settled_status(status_val.get("status") or status_val.get("state"))
     return False
 
 
 def _is_blnk_failed_status(status_val) -> bool:
     if isinstance(status_val, str):
-        return status_val.upper() in ["REJECTED", "FAILED", "VOID"]
+        return status_val.upper() in ["REJECTED", "FAILED", "VOID", "CANCELLED", "DECLINED"]
+    if isinstance(status_val, dict):
+        return _is_blnk_failed_status(status_val.get("status") or status_val.get("state"))
     return False
 
 
