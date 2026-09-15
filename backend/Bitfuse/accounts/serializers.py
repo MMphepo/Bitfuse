@@ -1,8 +1,9 @@
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
+from decimal import Decimal
 from rest_framework import serializers
 
-from .models import Notification, Transaction
+from .models import Notification, Transaction, Transfer, User
 from orders.models import Order
 
 User = get_user_model()
@@ -46,6 +47,38 @@ class UserSerializer(serializers.ModelSerializer):
             "email_verified",
             "phone_verified",
         ]
+
+
+class TransferSerializer(serializers.ModelSerializer):
+    sender_username = serializers.CharField(source="sender.username", read_only=True)
+    recipient_username = serializers.CharField(source="recipient.username", read_only=True)
+
+    class Meta:
+        model = Transfer
+        fields = [
+            "id",
+            "reference",
+            "sender_username",
+            "recipient_username",
+            "amount",
+            "currency",
+            "status",
+            "idempotency_key",
+            "blnk_tx_id",
+            "created_at",
+        ]
+
+
+class TransferCreateSerializer(serializers.Serializer):
+    recipient_username = serializers.CharField(required=True)
+    amount = serializers.DecimalField(max_digits=18, decimal_places=6, required=True)
+    currency = serializers.ChoiceField(choices=["USDT", "MWK"], default="USDT")
+    idempotency_key = serializers.CharField(max_length=100, required=True)
+
+    def validate_amount(self, value):
+        if value <= Decimal("0"):
+            raise serializers.ValidationError("Amount must be strictly positive.")
+        return value
 
 
 class TransactionSerializer(serializers.ModelSerializer):
