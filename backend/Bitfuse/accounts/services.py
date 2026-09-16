@@ -1,17 +1,28 @@
 """Account/wallet services — the bridge between the Django business engine and Blnk."""
 
 import logging
+import random
+import string
+import time
 from decimal import Decimal
 
 from django.conf import settings
+from django.core.cache import cache
 from django.db import transaction as db_transaction
 
 from accounts.blnk_client import BlnkClient
-import random
-import string
 from accounts.models import Notification, PlatformAccount, Transfer, User, Wallet
 
 logger = logging.getLogger(__name__)
+
+BALANCE_CACHE_TTL = 45  # 45 seconds short-term cache TTL
+
+
+def invalidate_wallet_balance_cache(user_id) -> None:
+    """Invalidate cached wallet balance for a user after a financial mutation."""
+    cache_key = f"wallet_balance:{user_id}"
+    cache.delete(cache_key)
+    logger.debug(f"[BLNK_CACHE_INVALIDATE] Cleared cache key {cache_key}")
 
 
 def ensure_user_wallets(user: User) -> tuple[Wallet, Wallet]:
@@ -52,59 +63,97 @@ def ensure_user_wallets(user: User) -> tuple[Wallet, Wallet]:
 def fetch_wallet_balance(user: User) -> dict:
     """Return real numeric Blnk balances for a user: {MWK: Decimal, USDT: Decimal}.
 
+    Uses Django cache with TTL 45s. Includes single-flight lock protection
+    against duplicate simultaneous requests for the same user balance.
+
     Raises exception if Blnk is unreachable so views can differentiate Blnk outages from 0 balances.
     """
-    mwk_wallet, usdt_wallet = ensure_user_wallets(user)
-    client = BlnkClient()
+    cache_key = f"wallet_balance:{user.id}"
+    cached_val = cache.get(cache_key)
 
-    def _extract_val(val) -> Decimal | None:
-        if val is None:
+    if cached_val is not None:
+        logger.debug(f"[BLNK_CACHE_HIT] user_id={user.id}")
+        return {
+            "MWK": Decimal(str(cached_val.get("MWK", "0"))),
+            "USDT": Decimal(str(cached_val.get("USDT", "0"))),
+        }
+
+    logger.debug(f"[BLNK_CACHE_MISS] user_id={user.id}")
+
+    # Single-flight request coalescing using Django cache abstraction
+    lock_key = f"wallet_balance_lock:{user.id}"
+    acquired_lock = cache.add(lock_key, "1", timeout=5)
+
+    if not acquired_lock:
+        for _ in range(10):
+            time.sleep(0.2)
+            cached_val = cache.get(cache_key)
+            if cached_val is not None:
+                logger.debug(f"[BLNK_COALESCED_HIT] user_id={user.id}")
+                return {
+                    "MWK": Decimal(str(cached_val.get("MWK", "0"))),
+                    "USDT": Decimal(str(cached_val.get("USDT", "0"))),
+                }
+
+    try:
+        mwk_wallet, usdt_wallet = ensure_user_wallets(user)
+        client = BlnkClient()
+
+        def _extract_val(val) -> Decimal | None:
+            if val is None:
+                return None
+            if isinstance(val, (int, float, str, Decimal)):
+                return Decimal(str(val))
+            if isinstance(val, dict):
+                for subkey in ["amount", "balance", "available", "value", "current"]:
+                    if subkey in val and val[subkey] is not None:
+                        res = _extract_val(val[subkey])
+                        if res is not None:
+                            return res
             return None
-        if isinstance(val, (int, float, str, Decimal)):
-            return Decimal(str(val))
-        if isinstance(val, dict):
-            for subkey in ["amount", "balance", "available", "value", "current"]:
-                if subkey in val and val[subkey] is not None:
-                    res = _extract_val(val[subkey])
-                    if res is not None:
-                        return res
-        return None
 
-    def _amount(balance_id: str, precision: int) -> Decimal:
-        data = client.get_balance(balance_id)
-        logger.debug(f"[BLNK] Balance payload for {balance_id}: {data}")
+        def _amount(balance_id: str, precision: int) -> Decimal:
+            data = client.get_balance(balance_id)
+            logger.debug(f"[BLNK] Balance payload for {balance_id}: {data}")
 
-        raw_balance = None
-        # Check standard fields: balance, available_balance, current_balance
-        for key in ["balance", "available_balance", "current_balance"]:
-            if key in data and data[key] is not None:
-                parsed = _extract_val(data[key])
-                if parsed is not None:
-                    raw_balance = parsed
-                    break
+            raw_balance = None
+            for key in ["balance", "available_balance", "current_balance"]:
+                if key in data and data[key] is not None:
+                    parsed = _extract_val(data[key])
+                    if parsed is not None:
+                        raw_balance = parsed
+                        break
 
-        if raw_balance is None or raw_balance == Decimal("0"):
-            # Fallback to credit_balance - debit_balance + inflight_balance if present
-            credit = _extract_val(data.get("credit_balance")) or Decimal("0")
-            debit = _extract_val(data.get("debit_balance")) or Decimal("0")
-            inflight = _extract_val(data.get("inflight_balance")) or Decimal("0")
-            calc = (credit - debit) + inflight
-            if calc != Decimal("0"):
-                raw_balance = calc
+            if raw_balance is None or raw_balance == Decimal("0"):
+                credit = _extract_val(data.get("credit_balance")) or Decimal("0")
+                debit = _extract_val(data.get("debit_balance")) or Decimal("0")
+                inflight = _extract_val(data.get("inflight_balance")) or Decimal("0")
+                calc = (credit - debit) + inflight
+                if calc != Decimal("0"):
+                    raw_balance = calc
 
-        if raw_balance is None:
-            raw_balance = Decimal("0")
+            if raw_balance is None:
+                raw_balance = Decimal("0")
 
-        return (raw_balance / Decimal(precision)).quantize(
-            Decimal("0.01") if precision == settings.CURRENCY_PRECISION["MWK"] else Decimal("0.000001")
-        )
+            return (raw_balance / Decimal(precision)).quantize(
+                Decimal("0.01") if precision == settings.CURRENCY_PRECISION["MWK"] else Decimal("0.000001")
+            )
 
-    balances = {
-        "MWK": _amount(mwk_wallet.blnk_balance_id, settings.CURRENCY_PRECISION["MWK"]),
-        "USDT": _amount(usdt_wallet.blnk_balance_id, settings.CURRENCY_PRECISION["USDT"]),
-    }
+        balances = {
+            "MWK": _amount(mwk_wallet.blnk_balance_id, settings.CURRENCY_PRECISION["MWK"]),
+            "USDT": _amount(usdt_wallet.blnk_balance_id, settings.CURRENCY_PRECISION["USDT"]),
+        }
 
-    return balances
+        serializable_balances = {
+            "MWK": str(balances["MWK"]),
+            "USDT": str(balances["USDT"]),
+        }
+        cache.set(cache_key, serializable_balances, timeout=BALANCE_CACHE_TTL)
+        return balances
+
+    finally:
+        if acquired_lock:
+            cache.delete(lock_key)
 
 
 def ensure_frozen_balance() -> PlatformAccount:
@@ -255,5 +304,9 @@ def perform_p2p_transfer(sender: User, recipient_username: str, amount: Decimal,
             body=f"You received {amount} {currency} from {sender.username}.",
             reference=ref,
         )
+
+    # Invalidate balance cache for both sender and recipient after successful P2P transfer
+    invalidate_wallet_balance_cache(sender.id)
+    invalidate_wallet_balance_cache(recipient.id)
 
     return transfer

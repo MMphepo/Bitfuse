@@ -1,4 +1,5 @@
 import logging
+import random
 import time
 import requests
 from django.conf import settings
@@ -9,59 +10,93 @@ logger = logging.getLogger(__name__)
 class BlnkClient:
     """Robust, central client for Blnk Ledger with HTTP 429 rate limit backoff and retries."""
 
-    def __init__(self, max_retries: int = 5, backoff_factor: float = 1.0):
+    def __init__(self, max_retries: int = 1, backoff_factor: float = 0.5, timeout: float = 3.0):
         self.base_url = settings.BLNK_BASE_URL.rstrip('/') if settings.BLNK_BASE_URL else ""
         self.headers = {"Content-Type": "application/json"}
         if getattr(settings, "BLNK_SECRET_KEY", None):
             self.headers["X-Blnk-Key"] = settings.BLNK_SECRET_KEY
         self.max_retries = max_retries
         self.backoff_factor = backoff_factor
+        self.default_timeout = timeout
 
-    def _request(self, method: str, endpoint: str, **kwargs) -> dict:
+    def _request(
+        self,
+        method: str,
+        endpoint: str,
+        max_retries: int | None = None,
+        timeout: float | None = None,
+        **kwargs,
+    ) -> dict:
         url = f"{self.base_url}{endpoint}"
         kwargs.setdefault("headers", self.headers)
-        kwargs.setdefault("timeout", 10)
+        req_timeout = timeout if timeout is not None else self.default_timeout
+        kwargs.setdefault("timeout", req_timeout)
+        retries = max_retries if max_retries is not None else self.max_retries
 
-        for attempt in range(self.max_retries + 1):
+        start_time = time.monotonic()
+
+        for attempt in range(retries + 1):
+            attempt_start = time.monotonic()
             try:
+                logger.debug(f"[BLNK_REQUEST] {method} {endpoint} (attempt {attempt + 1}/{retries + 1})")
                 resp = requests.request(method, url, **kwargs)
+                duration = time.monotonic() - attempt_start
 
                 # Handle HTTP 429 Too Many Requests
                 if resp.status_code == 429:
-                    retry_after = resp.headers.get("Retry-After")
-                    if retry_after and retry_after.isdigit():
-                        sleep_time = float(retry_after)
-                    else:
-                        sleep_time = self.backoff_factor * (2 ** attempt)
+                    logger.warning(
+                        f"[BLNK_429] {method} {endpoint} status=429 duration={duration:.3f}s attempt={attempt + 1}"
+                    )
+                    if attempt < retries:
+                        retry_after = resp.headers.get("Retry-After")
+                        if retry_after and retry_after.isdigit():
+                            sleep_time = min(float(retry_after), 1.0)
+                        else:
+                            sleep_time = min(self.backoff_factor * (2 ** attempt) + random.uniform(0.05, 0.2), 1.0)
 
-                    if attempt < self.max_retries:
-                        logger.warning(
-                            f"[BLNK] Received HTTP 429 for {method} {endpoint}. "
-                            f"Retrying attempt {attempt + 1}/{self.max_retries} after {sleep_time:.2f}s..."
-                        )
                         time.sleep(sleep_time)
                         continue
                     else:
-                        logger.error(f"[BLNK] Exhausted retries after HTTP 429 for {method} {endpoint}")
                         resp.raise_for_status()
 
-                # Handle transient 5xx server errors
-                if 500 <= resp.status_code < 600 and attempt < self.max_retries:
-                    sleep_time = self.backoff_factor * (2 ** attempt)
+                # Handle transient server errors (500, 502, 503, 504)
+                if resp.status_code in (500, 502, 503, 504) and attempt < retries:
                     logger.warning(
-                        f"[BLNK] Received HTTP {resp.status_code} for {method} {endpoint}. "
-                        f"Retrying attempt {attempt + 1}/{self.max_retries} after {sleep_time:.2f}s..."
+                        f"[BLNK_5XX] {method} {endpoint} status={resp.status_code} duration={duration:.3f}s attempt={attempt + 1}"
                     )
+                    sleep_time = min(self.backoff_factor * (2 ** attempt) + random.uniform(0.05, 0.2), 1.0)
                     time.sleep(sleep_time)
                     continue
 
                 resp.raise_for_status()
+                total_duration = time.monotonic() - start_time
+                logger.debug(
+                    f"[BLNK_SUCCESS] {method} {endpoint} status={resp.status_code} duration={total_duration:.3f}s"
+                )
                 return resp.json() if resp.content else {}
 
+            except (requests.Timeout, requests.ConnectionError) as exc:
+                duration = time.monotonic() - attempt_start
+                if attempt < retries:
+                    logger.warning(
+                        f"[BLNK_TIMEOUT] {method} {endpoint} error={exc} duration={duration:.3f}s attempt={attempt + 1}"
+                    )
+                    sleep_time = min(self.backoff_factor * (2 ** attempt) + random.uniform(0.05, 0.2), 1.0)
+                    time.sleep(sleep_time)
+                    continue
+                logger.error(f"[BLNK_CONNECTION_ERROR] {method} {endpoint} failed after {attempt + 1} attempts: {exc}")
+                raise exc
+            except requests.HTTPError as exc:
+                duration = time.monotonic() - attempt_start
+                logger.error(
+                    f"[BLNK_HTTP_ERROR] {method} {endpoint} status={exc.response.status_code if exc.response is not None else 'unknown'} duration={duration:.3f}s"
+                )
+                raise exc
             except requests.RequestException as exc:
-                if attempt < self.max_retries and not isinstance(exc, requests.HTTPError):
-                    sleep_time = self.backoff_factor * (2 ** attempt)
-                    logger.warning(f"[BLNK] Connection error for {method} {endpoint}: {exc}. Retrying in {sleep_time:.2f}s...")
+                duration = time.monotonic() - attempt_start
+                if attempt < retries:
+                    logger.warning(f"[BLNK_CONNECTION_ERROR] {method} {endpoint}: {exc}. Retrying...")
+                    sleep_time = min(self.backoff_factor * (2 ** attempt) + random.uniform(0.05, 0.2), 1.0)
                     time.sleep(sleep_time)
                     continue
                 raise exc

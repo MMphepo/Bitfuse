@@ -7,7 +7,7 @@ from rest_framework.exceptions import PermissionDenied
 
 from accounts.blnk_client import BlnkClient
 from accounts.models import PlatformAccount
-from accounts.services import ensure_user_wallets, fetch_wallet_balance
+from accounts.services import ensure_user_wallets, fetch_wallet_balance, invalidate_wallet_balance_cache
 from decouple import config
 
 from withdrawals.models import Withdrawal, WithdrawalConfig, WithdrawalNetworkConfig, WithdrawalAddress
@@ -174,6 +174,7 @@ def initiate_withdrawal(user, asset: str, network: str, amount: Decimal, destina
                 withdrawal.blnk_transaction_refs.append(txn["transaction_id"])
                 withdrawal.status = "PROCESSING"
                 withdrawal.save(update_fields=["status", "blnk_transaction_refs"])
+                invalidate_wallet_balance_cache(user.id)
             except Exception as e:
                 logger.error(f"Blnk reservation failed for withdrawal {withdrawal.id}: {str(e)}")
                 withdrawal.status = "FAILED"
@@ -238,6 +239,7 @@ def initiate_withdrawal(user, asset: str, network: str, amount: Decimal, destina
                     logger.critical(f"FATAL: Blnk refund failed for withdrawal {withdrawal.id}: {str(blnk_refund_err)}")
 
                 locked_withdrawal.save(update_fields=["status", "failure_reason", "blnk_transaction_refs"])
+                invalidate_wallet_balance_cache(user.id)
                 return locked_withdrawal
 
     except Exception as exc:
@@ -319,5 +321,6 @@ def monitor_broadcast_withdrawals() -> int:
                 locked_w.save(update_fields=["status", "failure_reason", "blnk_transaction_refs"])
                 processed_count += 1
                 logger.warn(f"Withdrawal {locked_w.id} FAILED on-chain, refunded user balance.")
+                invalidate_wallet_balance_cache(locked_w.user.id)
 
     return processed_count

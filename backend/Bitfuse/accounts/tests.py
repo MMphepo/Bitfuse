@@ -283,3 +283,106 @@ class BlnkIntegrationTests(TransactionTestCase):
             with self.assertRaises(ValueError) as exc:
                 perform_p2p_transfer(sender, "validrecip", Decimal("50.00"), "USDT", "idemp-overbound")
             self.assertIn("Insufficient USDT balance", str(exc.exception))
+
+    def test_12_wallet_balance_cache_hit_and_invalidation(self):
+        """Verify normal balance fetching populates cache, cache hit prevents Blnk calls, and mutation invalidates cache."""
+        from django.core.cache import cache
+        from accounts.services import fetch_wallet_balance, invalidate_wallet_balance_cache
+
+        user = User.objects.create_user(username="cache_user", email="cu@example.com", phone_number="+265999222111")
+        Wallet.objects.create(user=user, currency="MWK", blnk_balance_id="cu-mwk")
+        Wallet.objects.create(user=user, currency="USDT", blnk_balance_id="cu-usdt")
+
+        mock_client = mock.MagicMock()
+        mock_client.get_balance.side_effect = [
+            {"balance": 100000},  # 1000 MWK
+            {"balance": 50000000},  # 50 USDT
+        ]
+
+        with mock.patch("accounts.services.BlnkClient", return_value=mock_client), \
+             mock.patch("accounts.services.ensure_user_wallets", return_value=(
+                 Wallet.objects.get(user=user, currency="MWK"),
+                 Wallet.objects.get(user=user, currency="USDT"),
+             )):
+            # 1. First fetch — cache miss, calls Blnk twice (MWK + USDT)
+            bals1 = fetch_wallet_balance(user)
+            self.assertEqual(bals1["MWK"], Decimal("1000.00"))
+            self.assertEqual(bals1["USDT"], Decimal("50.000000"))
+            self.assertEqual(mock_client.get_balance.call_count, 2)
+
+            # 2. Second fetch — cache hit, does NOT call Blnk again
+            bals2 = fetch_wallet_balance(user)
+            self.assertEqual(bals2["MWK"], Decimal("1000.00"))
+            self.assertEqual(bals2["USDT"], Decimal("50.000000"))
+            self.assertEqual(mock_client.get_balance.call_count, 2)
+
+            # 3. Invalidate cache
+            invalidate_wallet_balance_cache(user.id)
+
+            # Prepare new mock return values for fresh Blnk call
+            mock_client.get_balance.side_effect = [
+                {"balance": 200000},  # 2000 MWK
+                {"balance": 100000000},  # 100 USDT
+            ]
+
+            # 4. Third fetch — cache miss after invalidation, calls Blnk again
+            bals3 = fetch_wallet_balance(user)
+            self.assertEqual(bals3["MWK"], Decimal("2000.00"))
+            self.assertEqual(bals3["USDT"], Decimal("100.000000"))
+            self.assertEqual(mock_client.get_balance.call_count, 4)
+
+    def test_13_blnk_failure_returns_503(self):
+        """Verify Blnk unavailable/timeout returns HTTP 503 structured response from WalletBalanceView."""
+        from rest_framework.test import APIClient
+        from rest_framework import status
+
+        user = User.objects.create_user(username="fail_user", email="fu@example.com", phone_number="+265999333111")
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        with mock.patch("accounts.services.fetch_wallet_balance", side_effect=RuntimeError("Blnk Timeout")):
+            response = client.get("/api/v1/auth/wallets/")
+            self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+            self.assertEqual(response.data["code"], "BALANCE_SERVICE_UNAVAILABLE")
+            self.assertIn("temporarily unavailable", response.data["message"])
+
+    def test_14_concurrent_balance_requests_coalescing(self):
+        """Verify concurrent requests for same user balance are coalesced into a single Blnk fetch."""
+        from django.core.cache import cache
+        from accounts.services import fetch_wallet_balance
+
+        user = User.objects.create_user(username="coal_user", email="coal@example.com", phone_number="+265999444111")
+        Wallet.objects.create(user=user, currency="MWK", blnk_balance_id="coal-mwk")
+        Wallet.objects.create(user=user, currency="USDT", blnk_balance_id="coal-usdt")
+
+        cache.delete(f"wallet_balance:{user.id}")
+
+        mock_client = mock.MagicMock()
+        mock_client.get_balance.side_effect = [
+            {"balance": 500000},  # 5000 MWK
+            {"balance": 20000000},  # 20 USDT
+        ]
+
+        results = []
+
+        def worker():
+            with mock.patch("accounts.services.BlnkClient", return_value=mock_client), \
+                 mock.patch("accounts.services.ensure_user_wallets", return_value=(
+                     Wallet.objects.get(user=user, currency="MWK"),
+                     Wallet.objects.get(user=user, currency="USDT"),
+                 )):
+                bals = fetch_wallet_balance(user)
+                results.append(bals)
+
+        t1 = threading.Thread(target=worker)
+        t2 = threading.Thread(target=worker)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0]["USDT"], Decimal("20.000000"))
+        self.assertEqual(results[1]["USDT"], Decimal("20.000000"))
+        # Blnk get_balance should only be called twice total (1 fetch for MWK, 1 for USDT)
+        self.assertEqual(mock_client.get_balance.call_count, 2)
