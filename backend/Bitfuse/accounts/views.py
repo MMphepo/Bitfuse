@@ -112,7 +112,12 @@ class WalletBalanceView(APIView):
             return Response(response_data, status=status.HTTP_200_OK)
         except Exception as exc:
             return Response(
-                {"detail": "Ledger service temporarily unavailable. Please try again shortly.", "error": str(exc)},
+                {
+                    "code": "BALANCE_SERVICE_UNAVAILABLE",
+                    "message": "Wallet balance is temporarily unavailable. Please try again shortly.",
+                    "detail": "Wallet balance is temporarily unavailable. Please try again shortly.",
+                    "error": str(exc),
+                },
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 

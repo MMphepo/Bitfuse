@@ -7,7 +7,7 @@ from decouple import config
 
 from accounts.blnk_client import BlnkClient
 from accounts.models import PlatformAccount
-from accounts.services import ensure_user_wallets
+from accounts.services import ensure_user_wallets, invalidate_wallet_balance_cache
 from withdrawals.models import Withdrawal, DepositRecord, WithdrawalNetworkConfig
 from withdrawals.services.blockchain import get_blockchain_provider
 from withdrawals.services.blockchain.bsc import BscProvider, to_checksum_address
@@ -112,6 +112,7 @@ def process_bsc_deposit_event(event_data: dict) -> DepositRecord:
             deposit.status = "CREDITED"
             deposit.blnk_transaction_id = txn["transaction_id"]
             deposit.save(update_fields=["status", "blnk_transaction_id", "confirmations"])
+            invalidate_wallet_balance_cache(user.id)
             logger.info(f"Successfully credited deposit {deposit.event_id} to user {user}")
 
         else:
