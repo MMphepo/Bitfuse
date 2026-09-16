@@ -30,9 +30,22 @@ from .services import (
 
 
 def _require_verified_kyc(user):
-    """KYC gate: only fully verified users can transact."""
-    if getattr(user, "verification_status", "unverified") != "verified":
-        raise PermissionDenied("Complete identity verification before trading on Bitfuse.")
+    """Trading gate: requires active account, verified email, verified phone, and verified KYC."""
+    if not user or not user.is_authenticated:
+        raise PermissionDenied("Authentication required.")
+    if not user.is_active:
+        raise PermissionDenied("Account is inactive.")
+    if not user.email_verified:
+        raise PermissionDenied("Please verify your email address to enable trading.")
+    if not user.phone_verified:
+        raise PermissionDenied("Please complete phone verification to enable trading.")
+    if user.verification_status != "verified":
+        if user.verification_status == "pending":
+            raise PermissionDenied("Your KYC verification is currently pending review.")
+        elif user.verification_status == "rejected":
+            raise PermissionDenied("Your KYC verification was rejected. Please resubmit identity verification.")
+        else:
+            raise PermissionDenied("Complete KYC identity verification to enable trading.")
 
 
 def _error(exc):

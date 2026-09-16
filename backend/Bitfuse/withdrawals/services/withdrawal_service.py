@@ -23,8 +23,21 @@ class WithdrawalError(Exception):
 
 def check_kyc_status(user):
     """Ensure user is fully verified before allowing withdrawals."""
-    if getattr(user, "verification_status", "unverified") != "verified":
-        raise PermissionDenied("Complete identity verification before withdrawing from Bitfuse.")
+    if not user or not user.is_authenticated:
+        raise PermissionDenied("Authentication required.")
+    if not user.is_active:
+        raise PermissionDenied("Account is inactive.")
+    if not user.email_verified:
+        raise PermissionDenied("Please verify your email address to enable trading.")
+    if not user.phone_verified:
+        raise PermissionDenied("Please complete phone verification to enable trading.")
+    if user.verification_status != "verified":
+        if user.verification_status == "pending":
+            raise PermissionDenied("Your KYC verification is currently pending review.")
+        elif user.verification_status == "rejected":
+            raise PermissionDenied("Your KYC verification was rejected. Please resubmit identity verification.")
+        else:
+            raise PermissionDenied("Complete KYC identity verification to enable trading.")
 
 
 def get_withdrawal_quote(user, amount: Decimal, asset: str = "USDT", network: str = "TRON") -> dict:

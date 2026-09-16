@@ -30,7 +30,7 @@ class BuyPaymentFlowTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(
             username="john", email="john@example.com", password="pw", phone_number="+265991000000",
-            verification_status="verified",
+            email_verified=True, phone_verified=True, verification_status="verified",
         )
         self.admin = User.objects.create_superuser(
             username="admin", email="admin@example.com", password="pw", phone_number="+265991000001",
