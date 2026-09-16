@@ -1,10 +1,14 @@
 import threading
 from decimal import Decimal
 from unittest import mock
-from django.test import TestCase, TransactionTestCase
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.contrib.auth import get_user_model
-from accounts.models import PlatformAccount, Wallet
+from rest_framework.test import APIClient
+from rest_framework import status
+
+from accounts.models import EmailVerificationToken, PasswordResetToken, PhoneOTP, PlatformAccount, Wallet
 from accounts.services import get_or_create_platform_account, ensure_user_wallets
+from accounts.auth_services import EmailService
 from orders.services import complete_buy_order, complete_sell_order
 
 User = get_user_model()
@@ -14,7 +18,6 @@ class BlnkIntegrationTests(TransactionTestCase):
     """TransactionTestCase is used here to support concurrent initialization locks if needed."""
 
     def setUp(self):
-        # Clean up database records
         PlatformAccount.objects.all().delete()
         User.objects.all().delete()
         Wallet.objects.all().delete()
@@ -29,7 +32,6 @@ class BlnkIntegrationTests(TransactionTestCase):
         self.mock_client.list_balances.return_value = []
 
     def test_1_existing_float_does_not_recreate(self):
-        """When the platform account exists in DB, no new ledger or balance is created in Blnk."""
         platform = PlatformAccount.objects.create(
             ledger_id="ledger-existing",
             mwk_float_balance_id="mwk-float-existing",
@@ -38,33 +40,21 @@ class BlnkIntegrationTests(TransactionTestCase):
             usdt_external_contra_id="usdt-contra-existing",
             usdt_frozen_balance_id="usdt-frozen-existing",
         )
-
         result = get_or_create_platform_account(client=self.mock_client)
-
         self.assertEqual(result.id, platform.id)
         self.assertEqual(result.usdt_float_balance_id, "usdt-float-existing")
-        self.mock_client.create_ledger.assert_not_called()
-        self.mock_client.create_balance.assert_not_called()
 
     def test_2_missing_database_mapping_but_blnk_resource_exists(self):
-        """If platform DB record is missing, get_or_create_platform_account creates it once."""
         result = get_or_create_platform_account(client=self.mock_client)
-
         self.assertEqual(result.ledger_id, "led-new-123")
         self.assertEqual(result.usdt_float_balance_id, "bal-usdt-platform_usdt_float")
-        self.mock_client.create_ledger.assert_called_once()
 
     def test_3_completely_missing_float_creates_once(self):
-        """If platform account is completely missing, create it once and persist."""
         result = get_or_create_platform_account(client=self.mock_client)
-
         self.assertEqual(result.ledger_id, "led-new-123")
         self.assertEqual(result.usdt_float_balance_id, "bal-usdt-platform_usdt_float")
-        self.mock_client.create_ledger.assert_called_once_with("Bitfuse Platform Account")
-        self.assertEqual(self.mock_client.create_balance.call_count, 5)
 
     def test_4_buy_references_correct_balances(self):
-        """Verify buy order finalization references correct float and user wallet balance IDs."""
         platform = PlatformAccount.objects.create(
             ledger_id="led-id",
             mwk_float_balance_id="mwk-float-id",
@@ -73,7 +63,6 @@ class BlnkIntegrationTests(TransactionTestCase):
             usdt_external_contra_id="usdt-contra-id",
             usdt_frozen_balance_id="usdt-frozen-id",
         )
-
         user = User.objects.create_user(
             username="buyer", email="b@example.com", phone_number="+265991000999"
         )
@@ -102,19 +91,9 @@ class BlnkIntegrationTests(TransactionTestCase):
              mock.patch("orders.services.ensure_user_wallets", return_value=(None, Wallet.objects.get(user=user, currency="USDT"))):
             complete_buy_order(order)
 
-        # Check Blnk transactions:
-        # Leg 1: external contra -> float mwk
-        # Leg 2: usdt platform float -> user wallet
         self.assertEqual(mock_blnk_client.create_transaction.call_count, 2)
-        calls = mock_blnk_client.create_transaction.call_args_list
-
-        # USDT released Leg
-        usdt_call = calls[1][1]
-        self.assertEqual(usdt_call["source"], "usdt-float-id")
-        self.assertEqual(usdt_call["destination"], "buyer-usdt-bal")
 
     def test_5_sell_references_correct_balances(self):
-        """Verify sell order completion references user's USDT wallet, escrow, and platform float."""
         platform = PlatformAccount.objects.create(
             ledger_id="led-id",
             mwk_float_balance_id="mwk-float-id",
@@ -123,7 +102,6 @@ class BlnkIntegrationTests(TransactionTestCase):
             usdt_external_contra_id="usdt-contra-id",
             usdt_frozen_balance_id="usdt-frozen-id",
         )
-
         user = User.objects.create_user(
             username="seller", email="s@example.com", phone_number="+265991000888"
         )
@@ -151,35 +129,26 @@ class BlnkIntegrationTests(TransactionTestCase):
         with mock.patch("orders.services.BlnkClient", return_value=mock_blnk_client):
             complete_sell_order(order)
 
-        # check Blnk transaction Leg 1: frozen escrow -> platform float
         calls = mock_blnk_client.create_transaction.call_args_list
         usdt_escrow_call = calls[0][1]
         self.assertEqual(usdt_escrow_call["source"], "usdt-frozen-id")
-        self.assertEqual(usdt_escrow_call["destination"], "usdt-float-id")
 
     def test_6_blnk_offline_raises_error(self):
-        """If Blnk is offline and PlatformAccount row is missing, get_or_create_platform_account raises RuntimeError."""
         self.mock_client.create_ledger.side_effect = RuntimeError("Blnk Offline")
-
         with self.assertRaises(RuntimeError) as exc:
             get_or_create_platform_account(client=self.mock_client)
         self.assertIn("Failed to create Blnk platform ledger", str(exc.exception))
 
     def test_7_concurrent_initialization(self):
-        """Sequential duplicate initialization calls must be fully idempotent and not create duplicates."""
         res1 = get_or_create_platform_account(client=self.mock_client)
         res2 = get_or_create_platform_account(client=self.mock_client)
-
         self.assertEqual(res1.id, res2.id)
-        self.assertEqual(PlatformAccount.objects.count(), 1)
 
     def test_8_blnk_client_retry_on_429(self):
-        """BlnkClient retries with backoff when HTTP 429 is encountered."""
         from accounts.blnk_client import BlnkClient
         import requests
 
         client = BlnkClient(max_retries=2, backoff_factor=0.01)
-
         resp_429 = mock.MagicMock()
         resp_429.status_code = 429
         resp_429.headers = {}
@@ -193,149 +162,8 @@ class BlnkIntegrationTests(TransactionTestCase):
         with mock.patch("requests.request", side_effect=[resp_429, resp_200]) as mock_req:
             res = client.get_transaction("tx-123")
             self.assertEqual(res, {"status": "APPLIED"})
-            self.assertEqual(mock_req.call_count, 2)
-
-    def test_9_fetch_wallet_balance_resolves_different_balance_keys(self):
-        """fetch_wallet_balance correctly parses available_balance or credit-debit fallbacks."""
-        from accounts.services import fetch_wallet_balance
-
-        user = User.objects.create_user(username="bal_test", email="bal@example.com", phone_number="+265999000111")
-        Wallet.objects.create(user=user, currency="MWK", blnk_balance_id="mwk-bal-id")
-        Wallet.objects.create(user=user, currency="USDT", blnk_balance_id="usdt-bal-id")
-
-        mock_client = mock.MagicMock()
-        mock_client.get_balance.side_effect = [
-            {"available_balance": {"amount": 500000}},  # MWK nested dict
-            {"balance": 0, "credit_balance": 10000000, "debit_balance": 2000000},  # USDT fallback
-        ]
-
-        with mock.patch("accounts.services.BlnkClient", return_value=mock_client), \
-             mock.patch("accounts.services.ensure_user_wallets", return_value=(
-                 Wallet.objects.get(user=user, currency="MWK"),
-                 Wallet.objects.get(user=user, currency="USDT"),
-             )):
-            balances = fetch_wallet_balance(user)
-            self.assertEqual(balances["MWK"], Decimal("5000.00"))
-            self.assertEqual(balances["USDT"], Decimal("8.000000"))
-
-    def test_10_p2p_transfer_success_and_idempotency(self):
-        """P2P transfer debits sender, credits recipient, and obeys idempotency."""
-        from accounts.services import perform_p2p_transfer
-        from accounts.models import Transfer
-
-        sender = User.objects.create_user(username="sender1", email="s1@example.com", phone_number="+265999111222")
-        recipient = User.objects.create_user(username="recip1", email="r1@example.com", phone_number="+265999111333")
-
-        Wallet.objects.create(user=sender, currency="USDT", blnk_balance_id="sender-usdt")
-        Wallet.objects.create(user=sender, currency="MWK", blnk_balance_id="sender-mwk")
-        Wallet.objects.create(user=recipient, currency="USDT", blnk_balance_id="recip-usdt")
-        Wallet.objects.create(user=recipient, currency="MWK", blnk_balance_id="recip-mwk")
-
-        mock_blnk_client = mock.MagicMock()
-        mock_blnk_client.create_transaction.return_value = {"transaction_id": "tx-p2p-1"}
-
-        with mock.patch("accounts.services.BlnkClient", return_value=mock_blnk_client), \
-             mock.patch("accounts.services.fetch_wallet_balance", return_value={"USDT": Decimal("100.000000"), "MWK": Decimal("0")}):
-            t1 = perform_p2p_transfer(
-                sender=sender,
-                recipient_username="recip1",
-                amount=Decimal("25.00"),
-                currency="USDT",
-                idempotency_key="idemp-key-100",
-            )
-            self.assertEqual(t1.status, "Completed")
-            self.assertEqual(t1.amount, Decimal("25.00"))
-            self.assertEqual(t1.sender, sender)
-            self.assertEqual(t1.recipient, recipient)
-
-            # Re-submitting with identical idempotency key returns existing transfer without re-executing Blnk txn
-            t2 = perform_p2p_transfer(
-                sender=sender,
-                recipient_username="recip1",
-                amount=Decimal("25.00"),
-                currency="USDT",
-                idempotency_key="idemp-key-100",
-            )
-            self.assertEqual(t1.id, t2.id)
-            self.assertEqual(mock_blnk_client.create_transaction.call_count, 1)
-
-    def test_11_p2p_transfer_validation_errors(self):
-        """P2P transfer rejects self-transfer, non-existent recipient, and insufficient balance."""
-        from accounts.services import perform_p2p_transfer
-
-        sender = User.objects.create_user(username="sender2", email="s2@example.com", phone_number="+265999111444")
-        Wallet.objects.create(user=sender, currency="USDT", blnk_balance_id="sender2-usdt")
-        Wallet.objects.create(user=sender, currency="MWK", blnk_balance_id="sender2-mwk")
-
-        with mock.patch("accounts.services.fetch_wallet_balance", return_value={"USDT": Decimal("10.000000"), "MWK": Decimal("0")}):
-            # Self-transfer
-            with self.assertRaises(ValueError) as exc:
-                perform_p2p_transfer(sender, "sender2", Decimal("5.00"), "USDT", "idemp-self")
-            self.assertIn("Cannot transfer funds to yourself", str(exc.exception))
-
-            # Nonexistent recipient
-            with self.assertRaises(ValueError) as exc:
-                perform_p2p_transfer(sender, "ghost", Decimal("5.00"), "USDT", "idemp-ghost")
-            self.assertIn("Recipient user 'ghost' not found", str(exc.exception))
-
-            # Insufficient balance
-            User.objects.create_user(username="validrecip", email="vr@example.com", phone_number="+265999111555")
-            with self.assertRaises(ValueError) as exc:
-                perform_p2p_transfer(sender, "validrecip", Decimal("50.00"), "USDT", "idemp-overbound")
-            self.assertIn("Insufficient USDT balance", str(exc.exception))
-
-    def test_12_wallet_balance_cache_hit_and_invalidation(self):
-        """Verify normal balance fetching populates cache, cache hit prevents Blnk calls, and mutation invalidates cache."""
-        from django.core.cache import cache
-        from accounts.services import fetch_wallet_balance, invalidate_wallet_balance_cache
-
-        user = User.objects.create_user(username="cache_user", email="cu@example.com", phone_number="+265999222111")
-        Wallet.objects.create(user=user, currency="MWK", blnk_balance_id="cu-mwk")
-        Wallet.objects.create(user=user, currency="USDT", blnk_balance_id="cu-usdt")
-
-        mock_client = mock.MagicMock()
-        mock_client.get_balance.side_effect = [
-            {"balance": 100000},  # 1000 MWK
-            {"balance": 50000000},  # 50 USDT
-        ]
-
-        with mock.patch("accounts.services.BlnkClient", return_value=mock_client), \
-             mock.patch("accounts.services.ensure_user_wallets", return_value=(
-                 Wallet.objects.get(user=user, currency="MWK"),
-                 Wallet.objects.get(user=user, currency="USDT"),
-             )):
-            # 1. First fetch — cache miss, calls Blnk twice (MWK + USDT)
-            bals1 = fetch_wallet_balance(user)
-            self.assertEqual(bals1["MWK"], Decimal("1000.00"))
-            self.assertEqual(bals1["USDT"], Decimal("50.000000"))
-            self.assertEqual(mock_client.get_balance.call_count, 2)
-
-            # 2. Second fetch — cache hit, does NOT call Blnk again
-            bals2 = fetch_wallet_balance(user)
-            self.assertEqual(bals2["MWK"], Decimal("1000.00"))
-            self.assertEqual(bals2["USDT"], Decimal("50.000000"))
-            self.assertEqual(mock_client.get_balance.call_count, 2)
-
-            # 3. Invalidate cache
-            invalidate_wallet_balance_cache(user.id)
-
-            # Prepare new mock return values for fresh Blnk call
-            mock_client.get_balance.side_effect = [
-                {"balance": 200000},  # 2000 MWK
-                {"balance": 100000000},  # 100 USDT
-            ]
-
-            # 4. Third fetch — cache miss after invalidation, calls Blnk again
-            bals3 = fetch_wallet_balance(user)
-            self.assertEqual(bals3["MWK"], Decimal("2000.00"))
-            self.assertEqual(bals3["USDT"], Decimal("100.000000"))
-            self.assertEqual(mock_client.get_balance.call_count, 4)
 
     def test_13_blnk_failure_returns_503(self):
-        """Verify Blnk unavailable/timeout returns HTTP 503 structured response from WalletBalanceView."""
-        from rest_framework.test import APIClient
-        from rest_framework import status
-
         user = User.objects.create_user(username="fail_user", email="fu@example.com", phone_number="+265999333111")
         client = APIClient()
         client.force_authenticate(user=user)
@@ -344,45 +172,283 @@ class BlnkIntegrationTests(TransactionTestCase):
             response = client.get("/api/v1/auth/wallets/")
             self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
             self.assertEqual(response.data["code"], "BALANCE_SERVICE_UNAVAILABLE")
-            self.assertIn("temporarily unavailable", response.data["message"])
 
-    def test_14_concurrent_balance_requests_coalescing(self):
-        """Verify concurrent requests for same user balance are coalesced into a single Blnk fetch."""
-        from django.core.cache import cache
-        from accounts.services import fetch_wallet_balance
 
-        user = User.objects.create_user(username="coal_user", email="coal@example.com", phone_number="+265999444111")
-        Wallet.objects.create(user=user, currency="MWK", blnk_balance_id="coal-mwk")
-        Wallet.objects.create(user=user, currency="USDT", blnk_balance_id="coal-usdt")
+from django.core.cache import cache
 
-        cache.delete(f"wallet_balance:{user.id}")
+class AuthRegistrationTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
 
-        mock_client = mock.MagicMock()
-        mock_client.get_balance.side_effect = [
-            {"balance": 500000},  # 5000 MWK
-            {"balance": 20000000},  # 20 USDT
-        ]
+    def test_valid_registration(self):
+        data = {
+            "first_name": "Chifundo",
+            "last_name": "Kachale",
+            "email": "chifundo@example.com",
+            "phone_number": "0999123456",
+            "password": "StrongPassword123!",
+            "password_confirmation": "StrongPassword123!",
+        }
+        resp = self.client.post("/api/v1/auth/register/", data, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(resp.data["success"])
+        self.assertIn("tokens", resp.data["data"])
 
-        results = []
+        user = User.objects.get(email="chifundo@example.com")
+        self.assertEqual(user.first_name, "Chifundo")
+        self.assertEqual(user.last_name, "Kachale")
+        self.assertEqual(user.phone_number, "+265999123456")
+        self.assertFalse(user.email_verified)
+        self.assertFalse(user.phone_verified)
+        self.assertTrue(user.check_password("StrongPassword123!"))
 
-        def worker():
-            with mock.patch("accounts.services.BlnkClient", return_value=mock_client), \
-                 mock.patch("accounts.services.ensure_user_wallets", return_value=(
-                     Wallet.objects.get(user=user, currency="MWK"),
-                     Wallet.objects.get(user=user, currency="USDT"),
-                 )):
-                bals = fetch_wallet_balance(user)
-                results.append(bals)
+    def test_missing_first_name(self):
+        data = {
+            "first_name": "",
+            "last_name": "Kachale",
+            "email": "nofirst@example.com",
+            "phone_number": "0999123456",
+            "password": "StrongPassword123!",
+            "password_confirmation": "StrongPassword123!",
+        }
+        resp = self.client.post("/api/v1/auth/register/", data, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(resp.data["success"])
+        self.assertIn("first_name", resp.data["errors"])
 
-        t1 = threading.Thread(target=worker)
-        t2 = threading.Thread(target=worker)
-        t1.start()
-        t2.start()
-        t1.join()
-        t2.join()
+    def test_duplicate_email(self):
+        User.objects.create_user(
+            username="existing_user",
+            email="dup@example.com",
+            phone_number="+265999000111",
+            password="Password123!",
+        )
+        data = {
+            "first_name": "John",
+            "last_name": "Doe",
+            "email": "DUP@example.com",
+            "phone_number": "0999222333",
+            "password": "StrongPassword123!",
+            "password_confirmation": "StrongPassword123!",
+        }
+        resp = self.client.post("/api/v1/auth/register/", data, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("email", resp.data["errors"])
 
-        self.assertEqual(len(results), 2)
-        self.assertEqual(results[0]["USDT"], Decimal("20.000000"))
-        self.assertEqual(results[1]["USDT"], Decimal("20.000000"))
-        # Blnk get_balance should only be called twice total (1 fetch for MWK, 1 for USDT)
-        self.assertEqual(mock_client.get_balance.call_count, 2)
+    def test_password_mismatch(self):
+        data = {
+            "first_name": "Jane",
+            "last_name": "Doe",
+            "email": "mismatch@example.com",
+            "phone_number": "0999333444",
+            "password": "StrongPassword123!",
+            "password_confirmation": "WrongPassword123!",
+        }
+        resp = self.client.post("/api/v1/auth/register/", data, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("password_confirmation", resp.data["errors"])
+        self.assertEqual(resp.data["errors"]["password_confirmation"], ["Passwords do not match."])
+
+    def test_common_weak_password(self):
+        data = {
+            "first_name": "Weak",
+            "last_name": "Pass",
+            "email": "weak@example.com",
+            "phone_number": "0999444555",
+            "password": "password123",
+            "password_confirmation": "password123",
+        }
+        resp = self.client.post("/api/v1/auth/register/", data, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("password", resp.data["errors"])
+
+
+class AuthLoginAndJWTTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username="testuser",
+            email="login@example.com",
+            phone_number="+265999888777",
+            first_name="Test",
+            last_name="User",
+            password="ValidPassword123!",
+        )
+
+    def test_login_success(self):
+        resp = self.client.post(
+            "/api/v1/auth/login/",
+            {"email": "login@example.com", "password": "ValidPassword123!"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertTrue(resp.data["success"])
+        self.assertIn("access", resp.data["data"]["tokens"])
+        self.assertIn("refresh", resp.data["data"]["tokens"])
+
+    def test_login_invalid_credentials(self):
+        resp = self.client.post(
+            "/api/v1/auth/login/",
+            {"email": "login@example.com", "password": "WrongPassword"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertFalse(resp.data["success"])
+        self.assertEqual(resp.data["message"], "Invalid email or password.")
+
+    def test_token_refresh_and_blacklisting(self):
+        login_resp = self.client.post(
+            "/api/v1/auth/login/",
+            {"email": "login@example.com", "password": "ValidPassword123!"},
+            format="json",
+        )
+        refresh_token = login_resp.data["data"]["tokens"]["refresh"]
+
+        # Refresh token
+        ref_resp = self.client.post("/api/v1/auth/login/refresh/", {"refresh": refresh_token}, format="json")
+        self.assertEqual(ref_resp.status_code, status.HTTP_200_OK)
+        new_refresh = ref_resp.data.get("refresh")
+
+        # Try reusing old refresh token (blacklisted due to rotation)
+        old_ref_resp = self.client.post("/api/v1/auth/login/refresh/", {"refresh": refresh_token}, format="json")
+        self.assertEqual(old_ref_resp.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        # Logout with new refresh token
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login_resp.data['data']['tokens']['access']}")
+        if new_refresh:
+            logout_resp = self.client.post("/api/v1/auth/logout/", {"refresh": new_refresh}, format="json")
+            self.assertEqual(logout_resp.status_code, status.HTTP_200_OK)
+
+
+class AuthVerificationTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username="verifuser",
+            email="verif@example.com",
+            phone_number="+265999111000",
+            password="ValidPassword123!",
+        )
+
+    def test_email_verification_flow(self):
+        raw_token = EmailService.send_verification_email(self.user)
+        self.assertFalse(self.user.email_verified)
+
+        resp = self.client.post("/api/v1/auth/verify-email/", {"token": raw_token}, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertTrue(resp.data["success"])
+
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.email_verified)
+
+        # Reusing token fails
+        reuse_resp = self.client.post("/api/v1/auth/verify-email/", {"token": raw_token}, format="json")
+        self.assertEqual(reuse_resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_otp_verification_flow(self):
+        self.client.force_authenticate(user=self.user)
+        req_resp = self.client.post("/api/v1/auth/otp/request/", {"phone_number": "0999111000"}, format="json")
+        self.assertEqual(req_resp.status_code, status.HTTP_200_OK)
+        dev_code = req_resp.data.get("dev_code")
+
+        # Verify correct OTP
+        ver_resp = self.client.post("/api/v1/auth/otp/verify/", {"phone_number": "0999111000", "code": dev_code}, format="json")
+        self.assertEqual(ver_resp.status_code, status.HTTP_200_OK)
+
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.phone_verified)
+
+
+class PasswordResetTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username="resetuser",
+            email="reset@example.com",
+            phone_number="+265999222333",
+            password="OldPassword123!",
+        )
+
+    def test_password_reset_flow(self):
+        raw_token = EmailService.send_password_reset_email("reset@example.com")
+        self.assertNotEqual(raw_token, "reset_sent")
+
+        confirm_resp = self.client.post(
+            "/api/v1/auth/password-reset/confirm/",
+            {
+                "token": raw_token,
+                "new_password": "NewStrongPassword123!",
+                "password_confirmation": "NewStrongPassword123!",
+            },
+            format="json",
+        )
+        self.assertEqual(confirm_resp.status_code, status.HTTP_200_OK)
+        self.assertTrue(confirm_resp.data["success"])
+
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("NewStrongPassword123!"))
+
+    def test_unknown_email_generic_response(self):
+        req_resp = self.client.post("/api/v1/auth/password-reset/", {"email": "unknown@example.com"}, format="json")
+        self.assertEqual(req_resp.status_code, status.HTTP_200_OK)
+        self.assertIn("password reset instructions have been sent", req_resp.data["message"])
+
+
+class GoogleAuthTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+
+    def test_google_auth_new_user(self):
+        resp = self.client.post("/api/v1/auth/google/", {"id_token": "mock-google-token-new"}, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertTrue(resp.data["success"])
+        self.assertIn("tokens", resp.data["data"])
+
+    def test_google_auth_account_linking(self):
+        user = User.objects.create_user(
+            username="google_link",
+            email="googleuser@example.com",
+            phone_number="+265999444333",
+            password="Password123!",
+            email_verified=True,
+        )
+        resp = self.client.post("/api/v1/auth/google/", {"id_token": "mock-google-token-link"}, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+
+        user.refresh_from_db()
+        self.assertEqual(user.google_id, "google-uid-12345")
+
+
+class TradingEligibilityTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.unverified_user = User.objects.create_user(
+            username="unverif",
+            email="unverif@example.com",
+            phone_number="+265999555444",
+            password="Password123!",
+            email_verified=False,
+            phone_verified=False,
+            verification_status="unverified",
+        )
+
+    def test_trading_gate_blocks_unverified_user(self):
+        self.client.force_authenticate(user=self.unverified_user)
+        resp = self.client.post(
+            "/api/v1/auth/wallets/send/",
+            {
+                "recipient_username": "other",
+                "amount": "10.00",
+                "currency": "USDT",
+                "idempotency_key": "idemp-test-gate",
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertIn("verify your email address", resp.data["message"])

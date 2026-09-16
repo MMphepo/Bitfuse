@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 import sys
 from pathlib import Path
 
+from datetime import timedelta
 from decouple import config, RepositoryEnv
 import dj_database_url
 
@@ -40,6 +41,11 @@ if len(JWT_SIGNING_KEY) < 32:
 
 SIMPLE_JWT = {
     "SIGNING_KEY": JWT_SIGNING_KEY,
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
+    "UPDATE_LAST_LOGIN": True,
 }
 
 # SECURITY WARNING: don't run with debug turned on in production!
@@ -59,6 +65,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "rest_framework",
     "rest_framework_simplejwt",
+    "rest_framework_simplejwt.token_blacklist",
     "corsheaders",
     "storages",
     "accounts",
@@ -140,10 +147,10 @@ REST_FRAMEWORK = {
         "rest_framework.throttling.UserRateThrottle",
     ],
     "DEFAULT_THROTTLE_RATES": {
-        "anon": "30/minute",
-        "user": "120/minute",
-        "auth": "10/minute",
-        "financial": "20/minute",
+        "anon": "10000/minute" if TESTING else "30/minute",
+        "user": "10000/minute" if TESTING else "120/minute",
+        "auth": "10000/minute" if TESTING else "10/minute",
+        "financial": "10000/minute" if TESTING else "20/minute",
     },
     "EXCEPTION_HANDLER": "Bitfuse.exceptions.custom_exception_handler",
 }
@@ -251,3 +258,27 @@ USE_TZ = True
 STATIC_URL = "/static/"
 
 STATIC_ROOT = BASE_DIR / "staticfiles"
+
+# Email Configuration
+EMAIL_BACKEND = config("EMAIL_BACKEND", default="django.core.mail.backends.console.EmailBackend")
+EMAIL_HOST = config("EMAIL_HOST", default="")
+EMAIL_PORT = config("EMAIL_PORT", default=587, cast=int)
+EMAIL_USE_TLS = config("EMAIL_USE_TLS", default=True, cast=bool)
+EMAIL_HOST_USER = config("EMAIL_HOST_USER", default="")
+EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD", default="")
+DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="Bitfuse <noreply@bitfuse.app>")
+
+# SMS & OTP Configuration
+SMS_PROVIDER = config("SMS_PROVIDER", default="console")  # Options: console, africas_talking, twilio
+SMS_API_KEY = config("SMS_API_KEY", default="")
+SMS_API_SECRET = config("SMS_API_SECRET", default="")
+SMS_SENDER_ID = config("SMS_SENDER_ID", default="Bitfuse")
+
+# CAPTCHA Configuration
+CAPTCHA_ENABLED = config("CAPTCHA_ENABLED", default=False, cast=bool)
+CAPTCHA_PROVIDER = config("CAPTCHA_PROVIDER", default="turnstile")  # Options: turnstile, recaptcha
+CAPTCHA_SECRET_KEY = config("CAPTCHA_SECRET_KEY", default="")
+
+# Google OAuth Configuration
+GOOGLE_CLIENT_ID = config("GOOGLE_CLIENT_ID", default="")
+GOOGLE_CLIENT_SECRET = config("GOOGLE_CLIENT_SECRET", default="")

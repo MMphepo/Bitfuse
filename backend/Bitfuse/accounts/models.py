@@ -28,6 +28,17 @@ class User(AbstractUser):
     blnk_wallet_balance_id = models.CharField(max_length=100, blank=True, null=True)
     blnk_ledger_id = models.CharField(max_length=100, blank=True, null=True)
 
+    google_id = models.CharField(max_length=255, blank=True, null=True, unique=True)
+
+    @property
+    def is_trading_eligible(self):
+        return (
+            self.is_active
+            and self.email_verified
+            and self.phone_verified
+            and self.verification_status == "verified"
+        )
+
     def __str__(self):
         return self.username
 
@@ -174,3 +185,51 @@ class Transfer(models.Model):
 
     def __str__(self):
         return f"Transfer {self.reference}: {self.sender.username} -> {self.recipient.username} ({self.amount} {self.currency})"
+
+
+class EmailVerificationToken(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="email_tokens")
+    token_hash = models.CharField(max_length=128, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    used = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Email token for {self.user.email} (used={self.used})"
+
+
+class PasswordResetToken(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="password_tokens")
+    token_hash = models.CharField(max_length=128, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    used = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Password token for {self.user.email} (used={self.used})"
+
+
+class PhoneOTP(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="phone_otps", null=True, blank=True)
+    phone_number = models.CharField(max_length=30, db_index=True)
+    otp_hash = models.CharField(max_length=128)
+    attempts = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    used = models.BooleanField(default=False)
+    purpose = models.CharField(max_length=30, default="phone_verification")
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"OTP for {self.phone_number} (used={self.used})"

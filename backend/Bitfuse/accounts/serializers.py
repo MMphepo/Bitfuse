@@ -1,51 +1,128 @@
+import uuid
+import re
+from decimal import Decimal
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
-from decimal import Decimal
 from rest_framework import serializers
 
 from .models import Notification, Transaction, Transfer, User
+from .auth_services import normalize_phone_number
 from orders.models import Order
 
 User = get_user_model()
 
 
 class RegisterSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, validators=[validate_password])
+    first_name = serializers.CharField(required=True, max_length=150)
+    last_name = serializers.CharField(required=True, max_length=150)
+    email = serializers.EmailField(required=True)
+    phone_number = serializers.CharField(required=True, max_length=30)
+    password = serializers.CharField(write_only=True, required=True)
+    password_confirmation = serializers.CharField(write_only=True, required=True)
+    captcha_token = serializers.CharField(write_only=True, required=False, allow_blank=True)
 
     class Meta:
         model = User
-        fields = ["id", "username", "email", "phone_number", "password", "location"]
+        fields = [
+            "id",
+            "first_name",
+            "last_name",
+            "email",
+            "phone_number",
+            "password",
+            "password_confirmation",
+            "captcha_token",
+        ]
+
+    def validate_first_name(self, value):
+        val = value.strip()
+        if not val:
+            raise serializers.ValidationError("First name is required.")
+        if len(val) < 2:
+            raise serializers.ValidationError("First name must be at least 2 characters long.")
+        return val
+
+    def validate_last_name(self, value):
+        val = value.strip()
+        if not val:
+            raise serializers.ValidationError("Last name is required.")
+        if len(val) < 2:
+            raise serializers.ValidationError("Last name must be at least 2 characters long.")
+        return val
+
+    def validate_email(self, value):
+        normalized_email = value.strip().lower()
+        if User.objects.filter(email__iexact=normalized_email).exists():
+            raise serializers.ValidationError("An account with this email address already exists.")
+        return normalized_email
+
+    def validate_phone_number(self, value):
+        normalized_phone = normalize_phone_number(value)
+        if User.objects.filter(phone_number=normalized_phone).exists():
+            raise serializers.ValidationError("An account with this phone number already exists.")
+        return normalized_phone
+
+    def validate_password(self, value):
+        validate_password(value)
+        return value
+
+    def validate(self, data):
+        pwd = data.get("password")
+        pwd_confirm = data.get("password_confirmation")
+        if pwd and pwd_confirm and pwd != pwd_confirm:
+            raise serializers.ValidationError({"password_confirmation": ["Passwords do not match."]})
+        return data
 
     def create(self, validated_data):
-        print("[register serializer] validated_data keys:", sorted(validated_data.keys()))
-        print("[register serializer] username:", validated_data.get("username"))
-        print("[register serializer] email:", validated_data.get("email"))
-        print("[register serializer] phone_number:", validated_data.get("phone_number"))
-        print("[register serializer] location:", validated_data.get("location"))
-        print("[register serializer] password present:", "password" in validated_data)
+        email = validated_data["email"]
+        first_name = validated_data["first_name"]
+        last_name = validated_data["last_name"]
+        phone_number = validated_data["phone_number"]
+        password = validated_data["password"]
+
+        # Generate unique internal username derived from email
+        base_username = re.sub(r"[^\w]", "_", email.split("@")[0]).lower()[:20]
+        if not base_username:
+            base_username = "user"
+
+        username = base_username
+        counter = 1
+        while User.objects.filter(username=username).exists():
+            suffix = uuid.uuid4().hex[:6]
+            username = f"{base_username}_{suffix}"
+            counter += 1
+
         user = User.objects.create_user(
-            username=validated_data["username"],
-            email=validated_data["email"],
-            phone_number=validated_data["phone_number"],
-            location=validated_data.get("location", ""),
-            password=validated_data["password"],
+            username=username,
+            email=email,
+            phone_number=phone_number,
+            first_name=first_name,
+            last_name=last_name,
+            password=password,
+            email_verified=False,
+            phone_verified=False,
+            verification_status="unverified",
         )
-        print("[register serializer] user created:", user.id)
         return user
 
 
 class UserSerializer(serializers.ModelSerializer):
+    is_trading_eligible = serializers.BooleanField(read_only=True)
+
     class Meta:
         model = User
         fields = [
             "id",
             "username",
+            "first_name",
+            "last_name",
             "email",
             "phone_number",
             "location",
             "verification_status",
             "email_verified",
             "phone_verified",
+            "is_trading_eligible",
         ]
 
 
@@ -100,15 +177,6 @@ class TransactionSerializer(serializers.ModelSerializer):
 
 
 class OrderHistorySerializer(serializers.ModelSerializer):
-    """Serialize an Order into the same shape as TransactionSerializer.
-
-    Order statuses are mapped to the frontend TxStatus enum:
-      - completed                        -> Completed
-      - cancelled / rejected / expired   -> Cancelled
-      - payment_mismatch                 -> Disputed
-      - everything else                  -> Pending
-    """
-
     type = serializers.SerializerMethodField()
     status = serializers.SerializerMethodField()
     method = serializers.SerializerMethodField()
