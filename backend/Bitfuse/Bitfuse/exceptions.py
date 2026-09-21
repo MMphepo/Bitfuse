@@ -70,24 +70,80 @@ def custom_exception_handler(exc, context):
             if isinstance(raw_data, dict) and "success" in raw_data:
                 return response
 
-            msg = "Authentication failed."
-            if response.status_code == status.HTTP_401_UNAUTHORIZED:
-                msg = "Invalid email or password."
-            elif isinstance(raw_data, dict) and "detail" in raw_data:
-                msg = str(raw_data["detail"])
+            error_code = getattr(exc, "error_code", None)
+            if isinstance(raw_data, dict):
+                if "code" in raw_data:
+                    error_code = raw_data["code"]
+                msg = str(raw_data.get("detail", raw_data.get("message", "")))
             elif isinstance(raw_data, str):
                 msg = raw_data
+            else:
+                msg = ""
 
-            response.data = {
-                "success": False,
-                "message": msg,
-            }
-            return response
+            if response.status_code == status.HTTP_401_UNAUTHORIZED:
+                if not error_code:
+                    detail_code = ""
+                    if isinstance(raw_data, dict) and "code" in raw_data:
+                        detail_code = str(raw_data["code"])
+                    elif isinstance(raw_data, dict) and "detail" in raw_data and hasattr(raw_data["detail"], "code"):
+                        detail_code = str(raw_data["detail"].code)
+
+                    if detail_code and detail_code.isupper():
+                        error_code = detail_code
+                    else:
+                        msg_lower = msg.lower()
+                        if "invalid email or password" in msg_lower or "invalid credentials" in msg_lower:
+                            error_code = "INVALID_CREDENTIALS"
+                        elif "session" in msg_lower and "expired" in msg_lower:
+                            error_code = "SESSION_EXPIRED"
+                        elif "session" in msg_lower and "revoked" in msg_lower:
+                            error_code = "SESSION_REVOKED"
+                        elif "expired" in msg_lower:
+                            error_code = "TOKEN_EXPIRED"
+                        elif "token" in msg_lower or detail_code == "token_not_valid":
+                            error_code = "TOKEN_INVALID"
+                        else:
+                            error_code = "AUTHENTICATION_REQUIRED"
+
+                if not msg:
+                    if error_code == "INVALID_CREDENTIALS":
+                        msg = "Invalid email or password."
+                    elif error_code == "TOKEN_EXPIRED":
+                        msg = "Your access token has expired."
+                    elif error_code == "SESSION_EXPIRED":
+                        msg = "Your session has expired due to inactivity."
+                    elif error_code == "SESSION_REVOKED":
+                        msg = "Your session has been revoked."
+                    elif error_code == "TOKEN_INVALID":
+                        msg = "Token is invalid or expired."
+                    else:
+                        msg = "Authentication credentials were not provided."
+
+                response.data = {
+                    "success": False,
+                    "message": msg,
+                    "code": error_code,
+                }
+                return response
+
+            if response.status_code == status.HTTP_403_FORBIDDEN:
+                if not error_code:
+                    error_code = "PERMISSION_DENIED"
+                if not msg:
+                    msg = "You do not have permission to perform this action."
+
+                response.data = {
+                    "success": False,
+                    "message": msg,
+                    "code": error_code,
+                }
+                return response
 
         if response.status_code == status.HTTP_429_TOO_MANY_REQUESTS:
             response.data = {
                 "success": False,
                 "message": "Too many requests. Please slow down and try again later.",
+                "code": "TOO_MANY_REQUESTS",
             }
             return response
 
@@ -99,6 +155,7 @@ def custom_exception_handler(exc, context):
             {
                 "success": False,
                 "message": "Database service temporarily unavailable. Please try again shortly.",
+                "code": "SERVICE_UNAVAILABLE",
             },
             status=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
@@ -107,7 +164,8 @@ def custom_exception_handler(exc, context):
     return Response(
         {
             "success": False,
-            "message": "Something went wrong while creating your account. Please try again.",
+            "message": "An unexpected server error occurred. Please try again later.",
+            "code": "SERVER_ERROR",
         },
         status=status.HTTP_500_INTERNAL_SERVER_ERROR,
     )
