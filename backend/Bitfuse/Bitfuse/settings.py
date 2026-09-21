@@ -48,6 +48,10 @@ SIMPLE_JWT = {
     "UPDATE_LAST_LOGIN": True,
 }
 
+# Session Inactivity & Lifetime Configuration
+SESSION_INACTIVITY_TIMEOUT_MINUTES = config("SESSION_INACTIVITY_TIMEOUT_MINUTES", default=15, cast=int)
+SESSION_MAX_LIFETIME_HOURS = config("SESSION_MAX_LIFETIME_HOURS", default=24, cast=int)
+
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config("DEBUG", default=True, cast=bool)
 
@@ -140,7 +144,7 @@ AUTH_USER_MODEL = "accounts.User"
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        "accounts.authentication.CustomJWTAuthentication",
     ],
     "DEFAULT_THROTTLE_CLASSES": [
         "rest_framework.throttling.AnonRateThrottle",

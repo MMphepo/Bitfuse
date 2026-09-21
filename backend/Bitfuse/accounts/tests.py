@@ -424,6 +424,159 @@ class GoogleAuthTests(TestCase):
         self.assertEqual(user.google_id, "google-uid-12345")
 
 
+from datetime import timedelta
+from django.utils import timezone
+from accounts.models import UserSession
+
+
+class SessionAndInactivityTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username="session_user",
+            email="session@example.com",
+            phone_number="+265999777666",
+            password="ValidPassword123!",
+        )
+
+    def test_login_creates_usersession(self):
+        resp = self.client.post(
+            "/api/v1/auth/login/",
+            {"email": "session@example.com", "password": "ValidPassword123!"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+
+        session = UserSession.objects.filter(user=self.user, is_active=True).first()
+        self.assertIsNotNone(session)
+        self.assertTrue(session.is_active)
+
+    def test_active_user_updates_last_activity(self):
+        login_resp = self.client.post(
+            "/api/v1/auth/login/",
+            {"email": "session@example.com", "password": "ValidPassword123!"},
+            format="json",
+        )
+        access_token = login_resp.data["data"]["tokens"]["access"]
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access_token}")
+
+        session = UserSession.objects.get(user=self.user, is_active=True)
+        old_activity = session.last_activity
+
+        # Backdate last_activity slightly
+        past_time = timezone.now() - timedelta(minutes=2)
+        UserSession.objects.filter(id=session.id).update(last_activity=past_time)
+
+        # Make active user API request
+        me_resp = self.client.get("/api/v1/auth/me/")
+        self.assertEqual(me_resp.status_code, status.HTTP_200_OK)
+
+        session.refresh_from_db()
+        self.assertGreater(session.last_activity, past_time)
+
+    def test_background_polling_does_not_update_last_activity(self):
+        login_resp = self.client.post(
+            "/api/v1/auth/login/",
+            {"email": "session@example.com", "password": "ValidPassword123!"},
+            format="json",
+        )
+        access_token = login_resp.data["data"]["tokens"]["access"]
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access_token}")
+
+        session = UserSession.objects.get(user=self.user, is_active=True)
+        past_time = timezone.now() - timedelta(minutes=2)
+        UserSession.objects.filter(id=session.id).update(last_activity=past_time)
+
+        # Call background polling endpoint
+        with mock.patch("accounts.services.fetch_wallet_balance", return_value={"MWK": 0, "USDT": 0}):
+            wallet_resp = self.client.get("/api/v1/auth/wallets/")
+            self.assertEqual(wallet_resp.status_code, status.HTTP_200_OK)
+
+        session.refresh_from_db()
+        # Activity should NOT be updated for background request
+        self.assertEqual(session.last_activity, past_time)
+
+    def test_session_inactivity_timeout_rejects_api_and_refresh(self):
+        login_resp = self.client.post(
+            "/api/v1/auth/login/",
+            {"email": "session@example.com", "password": "ValidPassword123!"},
+            format="json",
+        )
+        access_token = login_resp.data["data"]["tokens"]["access"]
+        refresh_token = login_resp.data["data"]["tokens"]["refresh"]
+
+        session = UserSession.objects.get(user=self.user, is_active=True)
+        # Backdate last_activity past the 15-minute threshold (e.g. 20 mins ago)
+        expired_activity = timezone.now() - timedelta(minutes=20)
+        UserSession.objects.filter(id=session.id).update(last_activity=expired_activity)
+
+        # Authenticated API request fails with SESSION_EXPIRED
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access_token}")
+        me_resp = self.client.get("/api/v1/auth/me/")
+        self.assertEqual(me_resp.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(me_resp.data["code"], "SESSION_EXPIRED")
+
+        # Token refresh fails with SESSION_EXPIRED
+        ref_client = APIClient()
+        ref_resp = ref_client.post("/api/v1/auth/login/refresh/", {"refresh": refresh_token}, format="json")
+        self.assertEqual(ref_resp.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(ref_resp.data["code"], "SESSION_EXPIRED")
+
+    def test_session_max_lifetime_rejects_session(self):
+        login_resp = self.client.post(
+            "/api/v1/auth/login/",
+            {"email": "session@example.com", "password": "ValidPassword123!"},
+            format="json",
+        )
+        access_token = login_resp.data["data"]["tokens"]["access"]
+
+        session = UserSession.objects.get(user=self.user, is_active=True)
+        # Backdate created_at past the 24-hour limit
+        old_created = timezone.now() - timedelta(hours=25)
+        UserSession.objects.filter(id=session.id).update(created_at=old_created)
+
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access_token}")
+        me_resp = self.client.get("/api/v1/auth/me/")
+        self.assertEqual(me_resp.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(me_resp.data["code"], "SESSION_EXPIRED")
+
+    def test_single_device_logout_revokes_only_target_session(self):
+        # Device A Login
+        client_a = APIClient()
+        resp_a = client_a.post(
+            "/api/v1/auth/login/",
+            {"email": "session@example.com", "password": "ValidPassword123!"},
+            format="json",
+            HTTP_USER_AGENT="DeviceA",
+        )
+        tokens_a = resp_a.data["data"]["tokens"]
+
+        # Device B Login
+        client_b = APIClient()
+        resp_b = client_b.post(
+            "/api/v1/auth/login/",
+            {"email": "session@example.com", "password": "ValidPassword123!"},
+            format="json",
+            HTTP_USER_AGENT="DeviceB",
+        )
+        tokens_b = resp_b.data["data"]["tokens"]
+
+        # Logout Device A
+        client_a.credentials(HTTP_AUTHORIZATION=f"Bearer {tokens_a['access']}")
+        logout_resp = client_a.post("/api/v1/auth/logout/", {"refresh": tokens_a["refresh"]}, format="json")
+        self.assertEqual(logout_resp.status_code, status.HTTP_200_OK)
+
+        # Device A is revoked
+        me_a = client_a.get("/api/v1/auth/me/")
+        self.assertEqual(me_a.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        # Device B remains active and working
+        client_b.credentials(HTTP_AUTHORIZATION=f"Bearer {tokens_b['access']}")
+        me_b = client_b.get("/api/v1/auth/me/")
+        self.assertEqual(me_b.status_code, status.HTTP_200_OK)
+
+
 class TradingEligibilityTests(TestCase):
     def setUp(self):
         cache.clear()

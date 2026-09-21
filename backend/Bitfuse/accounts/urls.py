@@ -1,5 +1,5 @@
 from django.urls import path
-from rest_framework_simplejwt.views import TokenRefreshView
+from .session_services import CustomTokenRefreshView
 
 from .views import (
     GoogleAuthView,
@@ -21,7 +21,7 @@ urlpatterns = [
     path("register/", RegisterView.as_view(), name="register"),
     path("login/", LoginView.as_view(), name="login"),
     path("logout/", LogoutView.as_view(), name="logout"),
-    path("login/refresh/", TokenRefreshView.as_view(), name="login-refresh"),
+    path("login/refresh/", CustomTokenRefreshView.as_view(), name="login-refresh"),
     path("verify-email/", VerifyEmailView.as_view(), name="verify-email"),
     path("resend-email-verification/", ResendEmailVerificationView.as_view(), name="resend-email-verification"),
     path("otp/request/", RequestOTPView.as_view(), name="otp-request"),

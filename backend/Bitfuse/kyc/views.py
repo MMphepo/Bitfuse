@@ -72,6 +72,11 @@ class KYCSubmitView(generics.CreateAPIView):
             existing.reviewed_at = None
             existing.reviewed_by = None
             existing.save()
+
+            if request.user.verification_status != "pending":
+                request.user.verification_status = "pending"
+                request.user.save(update_fields=["verification_status"])
+
             return Response(
                 KYCSubmissionSerializer(existing).data,
                 status=status.HTTP_200_OK,
@@ -82,6 +87,10 @@ class KYCSubmitView(generics.CreateAPIView):
             user=request.user,
             status="pending",
         )
+        if request.user.verification_status != "pending":
+            request.user.verification_status = "pending"
+            request.user.save(update_fields=["verification_status"])
+
         return Response(
             KYCSubmissionSerializer(submission).data,
             status=status.HTTP_201_CREATED,

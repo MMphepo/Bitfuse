@@ -9,7 +9,9 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 
-from .models import Notification, Transaction, Wallet
+from django.utils import timezone
+from .models import Notification, Transaction, UserSession, Wallet
+from .session_services import create_user_session
 from .serializers import (
     NotificationSerializer,
     OrderHistorySerializer,
@@ -55,7 +57,7 @@ class RegisterView(generics.CreateAPIView):
             import logging
             logging.getLogger(__name__).warning("Failed to send verification email on register: %s", exc)
 
-        refresh = RefreshToken.for_user(user)
+        session, refresh = create_user_session(user, request)
 
         return Response(
             {
@@ -109,7 +111,7 @@ class LoginView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
-        refresh = RefreshToken.for_user(user)
+        session, refresh = create_user_session(user, request)
 
         return Response(
             {
@@ -137,6 +139,17 @@ class LogoutView(APIView):
 
         try:
             token = RefreshToken(refresh_token)
+            session_key = token.get("session_key")
+            jti = token.get("jti")
+            now = timezone.now()
+            if session_key:
+                UserSession.objects.filter(session_key=session_key).update(
+                    is_active=False, revoked_at=now
+                )
+            elif jti:
+                UserSession.objects.filter(current_jti=jti).update(
+                    is_active=False, revoked_at=now
+                )
             token.blacklist()
         except TokenError as exc:
             raise ValidationError({"refresh": [str(exc)]})
@@ -367,7 +380,7 @@ class GoogleAuthView(APIView):
                     verification_status="unverified",
                 )
 
-        refresh = RefreshToken.for_user(user)
+        session, refresh = create_user_session(user, request)
 
         return Response(
             {
