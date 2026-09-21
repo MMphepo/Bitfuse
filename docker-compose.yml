@@ -1,0 +1,18 @@
+services:
+  bitfuse-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: bitfuse-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=False
+      - SECRET_KEY=change-me-bitfuse-secret-key-32bytes-minimum-length
+      - JWT_SECRET_KEY=change-me-bitfuse-secret-key-32bytes-minimum-length
+      - DATABASE_URL=sqlite:////app/Bitfuse/db.sqlite3
+      - BLNK_BASE_URL=https://bitfuse-blnk-server-qfn2.onrender.com
+      - CORS_ALLOWED_ORIGINS=https://bitfuse-mw.vercel.app,http://localhost:3000
+      - SESSION_INACTIVITY_TIMEOUT_MINUTES=15
+      - SESSION_MAX_LIFETIME_HOURS=24
+    restart: unless-stopped
