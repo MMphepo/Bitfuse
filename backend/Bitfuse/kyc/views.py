@@ -1,16 +1,277 @@
+from django.db import models, transaction
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, permissions, status
-from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.pagination import PageNumberPagination
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import KYCSubmission
+from .models import KYCReviewAction, KYCSubmission
 from .serializers import (
+    KYCAdminDetailSerializer,
+    KYCAdminListSerializer,
+    KYCApproveRequestSerializer,
+    KYCRejectRequestSerializer,
+    KYCResubmitRequestSerializer,
     KYCReviewSerializer,
     KYCSubmissionSerializer,
     KYCUploadSerializer,
 )
+
+
+class StandardResultsSetPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
+
+class KYCAdminStatsView(APIView):
+    """
+    GET /api/v1/kyc/admin/stats/
+    Returns summary counters for admin dashboard header:
+    - pending
+    - approved_today
+    - rejected_today
+    - total_approved
+    - total_rejected
+    - resubmission_required
+    - total_submissions
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        today_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
+
+        pending_count = KYCSubmission.objects.filter(status="pending").count()
+        approved_today = KYCSubmission.objects.filter(status="approved", reviewed_at__gte=today_start).count()
+        rejected_today = KYCSubmission.objects.filter(status="rejected", reviewed_at__gte=today_start).count()
+        total_approved = KYCSubmission.objects.filter(status="approved").count()
+        total_rejected = KYCSubmission.objects.filter(status="rejected").count()
+        resubmission_required = KYCSubmission.objects.filter(status="resubmission_required").count()
+        total_submissions = KYCSubmission.objects.count()
+
+        return Response(
+            {
+                "pending": pending_count,
+                "approved_today": approved_today,
+                "rejected_today": rejected_today,
+                "total_approved": total_approved,
+                "total_rejected": total_rejected,
+                "resubmission_required": resubmission_required,
+                "total": total_submissions,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class KYCAdminQueueView(generics.ListAPIView):
+    """
+    GET /api/v1/kyc/admin/queue/
+    GET /api/v1/kyc/admin/list/
+    Supports:
+    - pagination
+    - status filtering (?status=pending|approved|rejected|resubmission_required|needs_review|all)
+    - search (?search=name|email|phone|national_id)
+    - date filtering (?date_from=YYYY-MM-DD, ?date_to=YYYY-MM-DD)
+    """
+    permission_classes = [permissions.IsAdminUser]
+    serializer_class = KYCAdminListSerializer
+    pagination_class = StandardResultsSetPagination
+
+    def get_queryset(self):
+        qs = KYCSubmission.objects.select_related("user").order_by("-submitted_at")
+
+        status_param = self.request.query_params.get("status", "pending").strip().lower()
+        if status_param and status_param != "all":
+            if status_param == "needs_review":
+                qs = qs.filter(status__in=["pending", "resubmission_required"])
+            else:
+                qs = qs.filter(status=status_param)
+
+        search = self.request.query_params.get("search", "").strip()
+        if search:
+            qs = qs.filter(
+                Q(user__first_name__icontains=search)
+                | Q(user__last_name__icontains=search)
+                | Q(user__username__icontains=search)
+                | Q(user__email__icontains=search)
+                | Q(user__phone_number__icontains=search)
+                | Q(user__national_id_number__icontains=search)
+            )
+
+        date_from = self.request.query_params.get("date_from", "").strip()
+        if date_from:
+            qs = qs.filter(submitted_at__date__gte=date_from)
+
+        date_to = self.request.query_params.get("date_to", "").strip()
+        if date_to:
+            qs = qs.filter(submitted_at__date__lte=date_to)
+
+        return qs
+
+
+class KYCAdminDetailView(APIView):
+    """
+    GET /api/v1/kyc/admin/<submission_id>/
+    Admin-only endpoint for retrieving full details of one KYC submission.
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request, submission_id):
+        submission = get_object_or_404(
+            KYCSubmission.objects.select_related("user", "reviewed_by").prefetch_related("audit_logs__admin"),
+            id=submission_id,
+        )
+        serializer = KYCAdminDetailSerializer(submission)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class KYCAdminApproveView(APIView):
+    """
+    POST /api/v1/kyc/admin/<submission_id>/approve/
+    Admin-only. Approves a pending/resubmission_required KYC submission.
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def post(self, request, submission_id):
+        serializer = KYCApproveRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        note = serializer.validated_data.get("note", "").strip()
+
+        with transaction.atomic():
+            submission = KYCSubmission.objects.select_for_update().filter(id=submission_id).first()
+            if not submission:
+                return Response({"detail": "KYC submission not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            if submission.status == "approved":
+                return Response(
+                    {"detail": "KYC submission is already approved.", "submission": KYCAdminDetailSerializer(submission).data},
+                    status=status.HTTP_200_OK,
+                )
+
+            previous_status = submission.status
+            submission.status = "approved"
+            submission.rejection_reason = ""
+            submission.reviewed_by = request.user
+            submission.reviewed_at = timezone.now()
+
+            submission.user.verification_status = "verified"
+            submission.user.save(update_fields=["verification_status"])
+            submission.save(update_fields=["status", "rejection_reason", "reviewed_at", "reviewed_by"])
+
+            KYCReviewAction.objects.create(
+                submission=submission,
+                admin=request.user,
+                action="approved",
+                previous_status=previous_status,
+                new_status="approved",
+                reason="",
+                note=note,
+            )
+
+        return Response(
+            {
+                "message": f"KYC for {submission.user.username} approved successfully.",
+                "submission": KYCAdminDetailSerializer(submission).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class KYCAdminRejectView(APIView):
+    """
+    POST /api/v1/kyc/admin/<submission_id>/reject/
+    Admin-only. Rejects a KYC submission. Requires rejection reason.
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def post(self, request, submission_id):
+        serializer = KYCRejectRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        reason = serializer.validated_data["final_reason"]
+        note = serializer.validated_data.get("note", "").strip()
+
+        with transaction.atomic():
+            submission = KYCSubmission.objects.select_for_update().filter(id=submission_id).first()
+            if not submission:
+                return Response({"detail": "KYC submission not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            previous_status = submission.status
+            submission.status = "rejected"
+            submission.rejection_reason = reason
+            submission.reviewed_by = request.user
+            submission.reviewed_at = timezone.now()
+
+            submission.user.verification_status = "rejected"
+            submission.user.save(update_fields=["verification_status"])
+            submission.save(update_fields=["status", "rejection_reason", "reviewed_at", "reviewed_by"])
+
+            KYCReviewAction.objects.create(
+                submission=submission,
+                admin=request.user,
+                action="rejected",
+                previous_status=previous_status,
+                new_status="rejected",
+                reason=reason,
+                note=note,
+            )
+
+        return Response(
+            {
+                "message": f"KYC for {submission.user.username} rejected.",
+                "submission": KYCAdminDetailSerializer(submission).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class KYCAdminRequestResubmissionView(APIView):
+    """
+    POST /api/v1/kyc/admin/<submission_id>/request-resubmission/
+    Admin-only. Requests resubmission for a KYC submission.
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def post(self, request, submission_id):
+        serializer = KYCResubmitRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        reason = serializer.validated_data["final_reason"]
+        note = serializer.validated_data.get("note", "").strip()
+
+        with transaction.atomic():
+            submission = KYCSubmission.objects.select_for_update().filter(id=submission_id).first()
+            if not submission:
+                return Response({"detail": "KYC submission not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            previous_status = submission.status
+            submission.status = "resubmission_required"
+            submission.rejection_reason = reason
+            submission.reviewed_by = request.user
+            submission.reviewed_at = timezone.now()
+
+            submission.user.verification_status = "unverified"
+            submission.user.save(update_fields=["verification_status"])
+            submission.save(update_fields=["status", "rejection_reason", "reviewed_at", "reviewed_by"])
+
+            KYCReviewAction.objects.create(
+                submission=submission,
+                admin=request.user,
+                action="requested_resubmission",
+                previous_status=previous_status,
+                new_status="resubmission_required",
+                reason=reason,
+                note=note,
+            )
+
+        return Response(
+            {
+                "message": f"Resubmission requested for {submission.user.username}.",
+                "submission": KYCAdminDetailSerializer(submission).data,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class KYCSubmitView(generics.CreateAPIView):
