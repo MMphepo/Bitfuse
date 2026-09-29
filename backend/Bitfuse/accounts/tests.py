@@ -9,6 +9,7 @@ from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from rest_framework.test import APIClient
 from rest_framework import status
+from rest_framework.exceptions import ValidationError
 
 from accounts.models import EmailVerificationToken, PasswordResetToken, PhoneOTP, PlatformAccount, Wallet
 from accounts.services import get_or_create_platform_account, ensure_user_wallets
@@ -343,20 +344,61 @@ class AuthVerificationTests(TestCase):
             password="ValidPassword123!",
         )
 
-    def test_email_verification_flow(self):
+    def test_email_verification_flow_get_and_post(self):
         raw_token = EmailService.send_verification_email(self.user)
         self.assertFalse(self.user.email_verified)
 
-        resp = self.client.post("/api/v1/auth/verify-email/", {"token": raw_token}, format="json")
+        # GET request verification
+        resp = self.client.get(f"/api/v1/auth/verify-email/?token={raw_token}")
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         self.assertTrue(resp.data["success"])
+        self.assertEqual(resp.data["code"], "EMAIL_VERIFIED")
 
         self.user.refresh_from_db()
         self.assertTrue(self.user.email_verified)
 
-        # Reusing token fails
+        # Reusing token fails with TOKEN_ALREADY_USED
         reuse_resp = self.client.post("/api/v1/auth/verify-email/", {"token": raw_token}, format="json")
         self.assertEqual(reuse_resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(reuse_resp.data["code"], "TOKEN_ALREADY_USED")
+
+    def test_invalid_token_code(self):
+        resp = self.client.post("/api/v1/auth/verify-email/", {"token": "completely_bogus_token"}, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(resp.data["code"], "INVALID_TOKEN")
+
+    def test_expired_token_code(self):
+        raw_token = EmailService.send_verification_email(self.user)
+        # Backdate token expiration
+        token_hash = EmailService._hash_token(raw_token)
+        EmailVerificationToken.objects.filter(token_hash=token_hash).update(
+            expires_at=timezone.now() - timedelta(minutes=5)
+        )
+
+        resp = self.client.post("/api/v1/auth/verify-email/", {"token": raw_token}, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(resp.data["code"], "TOKEN_EXPIRED")
+
+    def test_resend_verification_generic_response_enumeration_protection(self):
+        # Non-existent email returns same generic success message
+        resp = self.client.post("/api/v1/auth/resend-verification/", {"email": "nonexistent@example.com"}, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertTrue(resp.data["success"])
+        self.assertIn("verification email will be sent", resp.data["message"])
+
+        # Existing unverified email returns same generic success message
+        resp_exist = self.client.post("/api/v1/auth/resend-verification/", {"email": "verif@example.com"}, format="json")
+        self.assertEqual(resp_exist.status_code, status.HTTP_200_OK)
+        self.assertTrue(resp_exist.data["success"])
+        self.assertIn("verification email will be sent", resp_exist.data["message"])
+
+    def test_resend_rate_limit(self):
+        # Trigger max requests
+        for _ in range(5):
+            EmailService.send_verification_email(self.user)
+
+        with self.assertRaises(ValidationError):
+            EmailService.send_verification_email(self.user)
 
     def test_otp_verification_flow(self):
         self.client.force_authenticate(user=self.user)
