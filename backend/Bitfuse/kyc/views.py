@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import KYCReviewAction, KYCSubmission
+from accounts.email_service import EmailNotificationService
 from .serializers import (
     KYCAdminDetailSerializer,
     KYCAdminListSerializer,
@@ -171,6 +172,8 @@ class KYCAdminApproveView(APIView):
                 note=note,
             )
 
+            EmailNotificationService.send_kyc_approved_email(submission.user)
+
         return Response(
             {
                 "message": f"KYC for {submission.user.username} approved successfully.",
@@ -218,6 +221,8 @@ class KYCAdminRejectView(APIView):
                 note=note,
             )
 
+            EmailNotificationService.send_kyc_rejected_email(submission.user, reason=reason)
+
         return Response(
             {
                 "message": f"KYC for {submission.user.username} rejected.",
@@ -264,6 +269,8 @@ class KYCAdminRequestResubmissionView(APIView):
                 reason=reason,
                 note=note,
             )
+
+            EmailNotificationService.send_kyc_resubmission_required_email(submission.user, reason=reason)
 
         return Response(
             {
@@ -352,6 +359,8 @@ class KYCSubmitView(generics.CreateAPIView):
             request.user.verification_status = "pending"
             request.user.save(update_fields=["verification_status"])
 
+        EmailNotificationService.send_kyc_submitted_email(request.user)
+
         return Response(
             KYCSubmissionSerializer(submission).data,
             status=status.HTTP_201_CREATED,
@@ -412,9 +421,11 @@ class KYCAdminReviewView(APIView):
         if new_status == "approved":
             submission.rejection_reason = ""
             submission.user.verification_status = "verified"
+            EmailNotificationService.send_kyc_approved_email(submission.user)
         else:
             submission.rejection_reason = data.get("rejection_reason", "")
             submission.user.verification_status = "rejected"
+            EmailNotificationService.send_kyc_rejected_email(submission.user, reason=submission.rejection_reason)
 
         submission.user.save(update_fields=["verification_status"])
         submission.save(update_fields=[

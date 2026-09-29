@@ -1,0 +1,9 @@
+Bitfuse
+
+Account Verified
+
+Hello {{ recipient_name }},
+
+Your identity verification (KYC) has been approved! Your Bitfuse account is now fully verified and ready for trading.
+
+Dashboard: {{ frontend_url }}/dashboard

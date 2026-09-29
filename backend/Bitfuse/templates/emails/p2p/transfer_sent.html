@@ -1,0 +1,12 @@
+{% extends "emails/base.html" %}
+{% block title %}P2P Transfer Sent - {{ reference }}{% endblock %}
+{% block content %}
+<h2 style="margin-top: 0; color: #0f172a;">Internal Transfer Sent</h2>
+<p>Hello {{ recipient_name }},</p>
+<p>You successfully sent an internal P2P transfer on Bitfuse.</p>
+<div style="background-color: #f8fafc; border-left: 4px solid #0052FF; padding: 16px; margin: 20px 0; border-radius: 4px;">
+    <p style="margin: 0; font-weight: 700; font-size: 18px; color: #0f172a;">- {{ amount }} {{ currency }}</p>
+    <p style="margin: 4px 0 0 0; font-size: 14px; color: #64748b;">Recipient: {{ recipient_username }}</p>
+    <p style="margin: 2px 0 0 0; font-size: 13px; color: #64748b;">Reference: {{ reference }}</p>
+</div>
+{% endblock %}

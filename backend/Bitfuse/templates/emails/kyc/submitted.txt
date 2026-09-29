@@ -1,0 +1,9 @@
+Bitfuse
+
+KYC Verification Submitted
+
+Hello {{ recipient_name }},
+
+Your identity verification (KYC) documents have been received and are currently under review.
+
+No further action is required at this time. You will receive an update once the review is complete.

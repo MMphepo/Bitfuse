@@ -1,0 +1,14 @@
+{% extends "emails/base.html" %}
+{% block title %}Sell Order Cancelled - {{ reference_number }}{% endblock %}
+{% block content %}
+<h2 style="margin-top: 0; color: #0f172a;">Sell Order Update</h2>
+<p>Hello {{ recipient_name }},</p>
+<p>Your sell order <strong>{{ reference_number }}</strong> has been cancelled or rejected.</p>
+{% if reason %}
+<div style="background-color: #fef2f2; border-left: 4px solid #dc2626; padding: 16px; margin: 20px 0; border-radius: 4px;">
+    <p style="margin: 0; font-weight: 600; color: #991b1b;">Reason:</p>
+    <p style="margin: 4px 0 0 0; font-size: 14px; color: #b91c1c;">{{ reason }}</p>
+</div>
+{% endif %}
+<p style="font-size: 14px; color: #64748b;">Any locked escrow USDT for this order has been returned to your Bitfuse wallet balance.</p>
+{% endblock %}

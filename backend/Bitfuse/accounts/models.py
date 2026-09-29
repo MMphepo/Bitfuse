@@ -252,3 +252,36 @@ class UserSession(models.Model):
 
     def __str__(self):
         return f"Session {self.session_key} for {self.user.username} (active={self.is_active})"
+
+
+class EmailNotification(models.Model):
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("sent", "Sent"),
+        ("failed", "Failed"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="email_notifications", null=True, blank=True)
+    event_type = models.CharField(max_length=60, db_index=True)
+    reference_type = models.CharField(max_length=60, db_index=True, blank=True, default="")
+    reference_id = models.CharField(max_length=100, db_index=True, blank=True, default="")
+    recipient = models.EmailField(max_length=254, db_index=True)
+    subject = models.CharField(max_length=255)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending", db_index=True)
+    attempt_count = models.IntegerField(default=0)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    last_error = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["event_type", "reference_type", "reference_id", "recipient"],
+                name="unique_email_notification_per_event_reference",
+            )
+        ]
+
+    def __str__(self):
+        return f"EmailNotification [{self.event_type}] to {self.recipient} (status={self.status})"

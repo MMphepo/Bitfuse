@@ -1,0 +1,9 @@
+Bitfuse
+
+Payment Verified
+
+Hello {{ recipient_name }},
+
+Your payment of MWK {{ mwk_amount }} for order {{ reference_number }} has been verified.
+
+Your {{ usdt_amount }} USDT credit is currently being processed into your wallet ledger.

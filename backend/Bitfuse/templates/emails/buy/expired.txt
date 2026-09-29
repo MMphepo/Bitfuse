@@ -1,0 +1,10 @@
+Bitfuse
+
+Buy Order Expired
+
+Hello {{ recipient_name }},
+
+Your buy order {{ reference_number }} expired before payment details were submitted.
+
+You can create a new buy order at:
+{{ frontend_url }}/buy

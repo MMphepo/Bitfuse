@@ -1,0 +1,10 @@
+Bitfuse
+
+Withdrawal Confirmed
+
+Hello {{ recipient_name }},
+
+Your withdrawal of {{ net_amount }} {{ asset }} on {{ network }} has been confirmed on-chain.
+
+Destination: {{ destination_address }}
+Tx Hash: {{ tx_hash }}

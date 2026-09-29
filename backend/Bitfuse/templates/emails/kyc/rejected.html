@@ -1,0 +1,17 @@
+{% extends "emails/base.html" %}
+{% block title %}Update on Your Bitfuse KYC Submission{% endblock %}
+{% block content %}
+<h2 style="margin-top: 0; color: #0f172a;">KYC Review Update</h2>
+<p>Hello {{ recipient_name }},</p>
+<p>Your identity verification (KYC) submission could not be verified.</p>
+{% if reason %}
+<div style="background-color: #fef2f2; border-left: 4px solid #dc2626; padding: 16px; margin: 20px 0; border-radius: 4px;">
+    <p style="margin: 0; font-weight: 600; color: #991b1b;">Reason:</p>
+    <p style="margin: 4px 0 0 0; font-size: 14px; color: #b91c1c;">{{ reason }}</p>
+</div>
+{% endif %}
+<p style="font-size: 14px; color: #64748b;">Please log in to your account and submit valid verification documents.</p>
+<div style="margin: 28px 0;">
+    <a href="{{ frontend_url }}/kyc" style="background-color: #0052FF; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">Resubmit Verification</a>
+</div>
+{% endblock %}

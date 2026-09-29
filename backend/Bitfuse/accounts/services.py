@@ -385,4 +385,8 @@ def perform_p2p_transfer(sender: User, recipient_username: str, amount: Decimal,
     invalidate_wallet_balance_cache(sender.id)
     invalidate_wallet_balance_cache(recipient.id)
 
+    from accounts.email_service import EmailNotificationService
+    EmailNotificationService.send_transfer_sent_email(transfer)
+    EmailNotificationService.send_transfer_received_email(transfer)
+
     return transfer

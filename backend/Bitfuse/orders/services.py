@@ -21,6 +21,7 @@ from django.conf import settings
 from accounts.blnk_client import BlnkClient
 from accounts.models import Notification, PlatformAccount, Rate, Transaction, Wallet
 from accounts.services import ensure_frozen_balance, ensure_user_wallets, invalidate_wallet_balance_cache
+from accounts.email_service import EmailNotificationService
 
 from .models import Order, OrderAuditLog, OrderSettlement
 from .payment_methods import method_details, normalise_transaction_id, transaction_id_error
@@ -218,6 +219,7 @@ def expire_order_if_due(order):
         "If you already paid, contact Bitfuse support with your transaction ID.",
         order.reference_number,
     )
+    EmailNotificationService.send_buy_order_expired_email(order)
     return order
 
 
@@ -344,6 +346,7 @@ def reject_payment(order, admin, reason):
         f"We couldn't verify your payment for order {order.reference_number}. Reason: {reason}",
         order.reference_number,
     )
+    EmailNotificationService.send_buy_order_rejected_email(order, reason=reason)
     return order
 
 
@@ -375,6 +378,7 @@ def verify_payment(order, admin, received_amount=None, note=""):
         order, "payment_verified", actor=admin, from_status=previous, to_status=order.status,
         note=note,
     )
+    EmailNotificationService.send_payment_confirmed_email(order)
 
     return complete_buy_order(order, admin=admin)
 
@@ -440,6 +444,7 @@ def complete_buy_order(order, admin=None):
                                 f"{locked.usdt_amount} USDT has been credited to your Bitfuse account.",
                                 locked.reference_number,
                             )
+                            EmailNotificationService.send_usdt_credited_email(locked)
                     except Exception as exc:
                         logger.warning(
                             f"Failed to check Blnk transaction {txn2_id} status for order {locked.reference_number}: {exc}"
@@ -545,6 +550,7 @@ def complete_buy_order(order, admin=None):
                     f"{locked.usdt_amount} USDT has been credited to your Bitfuse account.",
                     locked.reference_number,
                 )
+                EmailNotificationService.send_usdt_credited_email(locked)
                 invalidate_wallet_balance_cache(locked.user.id)
             else:
                 log_order_event(
@@ -615,3 +621,4 @@ def complete_sell_order(order):
 
     _write_history(order, method_label(order.payment_method), order.phone or "", order.fee_amount)
     invalidate_wallet_balance_cache(order.user.id)
+    EmailNotificationService.send_sell_order_completed_email(order)

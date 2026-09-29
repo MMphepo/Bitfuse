@@ -8,6 +8,7 @@ from rest_framework.exceptions import PermissionDenied
 from accounts.blnk_client import BlnkClient
 from accounts.models import PlatformAccount
 from accounts.services import ensure_user_wallets, fetch_wallet_balance, invalidate_wallet_balance_cache
+from accounts.email_service import EmailNotificationService
 from decouple import config
 
 from withdrawals.models import Withdrawal, WithdrawalConfig, WithdrawalNetworkConfig, WithdrawalAddress
@@ -188,6 +189,7 @@ def initiate_withdrawal(user, asset: str, network: str, amount: Decimal, destina
                 withdrawal.status = "PROCESSING"
                 withdrawal.save(update_fields=["status", "blnk_transaction_refs"])
                 invalidate_wallet_balance_cache(user.id)
+                EmailNotificationService.send_withdrawal_requested_email(withdrawal)
             except Exception as e:
                 logger.error(f"Blnk reservation failed for withdrawal {withdrawal.id}: {str(e)}")
                 withdrawal.status = "FAILED"
@@ -253,6 +255,7 @@ def initiate_withdrawal(user, asset: str, network: str, amount: Decimal, destina
 
                 locked_withdrawal.save(update_fields=["status", "failure_reason", "blnk_transaction_refs"])
                 invalidate_wallet_balance_cache(user.id)
+                EmailNotificationService.send_withdrawal_failed_email(locked_withdrawal, reason=str(chain_err))
                 return locked_withdrawal
 
     except Exception as exc:
@@ -307,6 +310,7 @@ def monitor_broadcast_withdrawals() -> int:
                 locked_w.save(update_fields=["status", "confirmed_at"])
                 processed_count += 1
                 logger.info(f"Withdrawal {locked_w.id} successfully CONFIRMED on-chain.")
+                EmailNotificationService.send_withdrawal_completed_email(locked_w)
 
             elif tx_status == "FAILED":
                 # Definitive failure: refund the user's USDT wallet from platform external contra
@@ -335,5 +339,6 @@ def monitor_broadcast_withdrawals() -> int:
                 processed_count += 1
                 logger.warn(f"Withdrawal {locked_w.id} FAILED on-chain, refunded user balance.")
                 invalidate_wallet_balance_cache(locked_w.user.id)
+                EmailNotificationService.send_withdrawal_failed_email(locked_w)
 
     return processed_count

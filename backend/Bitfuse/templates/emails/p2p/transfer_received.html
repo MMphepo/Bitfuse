@@ -1,0 +1,15 @@
+{% extends "emails/base.html" %}
+{% block title %}P2P Transfer Received - {{ reference }}{% endblock %}
+{% block content %}
+<h2 style="margin-top: 0; color: #0f172a;">Internal Transfer Received</h2>
+<p>Hello {{ recipient_name }},</p>
+<p>You received an internal P2P transfer on Bitfuse.</p>
+<div style="background-color: #f0fdf4; border-left: 4px solid #16a34a; padding: 16px; margin: 20px 0; border-radius: 4px;">
+    <p style="margin: 0; font-weight: 700; font-size: 18px; color: #166534;">+ {{ amount }} {{ currency }}</p>
+    <p style="margin: 4px 0 0 0; font-size: 14px; color: #15803d;">Sender: {{ sender_username }}</p>
+    <p style="margin: 2px 0 0 0; font-size: 13px; color: #15803d;">Reference: {{ reference }}</p>
+</div>
+<div style="margin: 28px 0;">
+    <a href="{{ frontend_url }}/wallets" style="background-color: #0052FF; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">View Wallet Balance</a>
+</div>
+{% endblock %}

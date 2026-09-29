@@ -1,0 +1,13 @@
+{% extends "emails/base.html" %}
+{% block title %}Verify Your Bitfuse Email Address{% endblock %}
+{% block content %}
+<h2 style="margin-top: 0; color: #0f172a;">Verify Your Email Address</h2>
+<p>Welcome to Bitfuse, {{ recipient_name }}.</p>
+<p>Please verify your email address to complete your account setup and enable account features.</p>
+<div style="margin: 28px 0;">
+    <a href="{{ verification_url }}" style="background-color: #0052FF; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">Verify Email Address</a>
+</div>
+<p style="font-size: 14px; color: #64748b;">This verification link expires in {{ expiry_minutes }} minutes.</p>
+<p style="font-size: 13px; color: #64748b;">If the button above does not work, copy and paste this link into your browser:<br/><a href="{{ verification_url }}" style="color: #0052FF;">{{ verification_url }}</a></p>
+<p style="font-size: 13px; color: #94a3b8;">If you did not create a Bitfuse account, you can safely ignore this email.</p>
+{% endblock %}

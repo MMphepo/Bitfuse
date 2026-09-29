@@ -1,0 +1,12 @@
+{% extends "emails/base.html" %}
+{% block title %}Your Bitfuse KYC Verification Was Submitted{% endblock %}
+{% block content %}
+<h2 style="margin-top: 0; color: #0f172a;">KYC Verification Submitted</h2>
+<p>Hello {{ recipient_name }},</p>
+<p>We have successfully received your identity verification (KYC) documents.</p>
+<div style="background-color: #f8fafc; border-left: 4px solid #0052FF; padding: 16px; margin: 20px 0; border-radius: 4px;">
+    <p style="margin: 0; font-weight: 600; color: #1e293b;">Status: Pending Review</p>
+    <p style="margin: 4px 0 0 0; font-size: 14px; color: #64748b;">Our compliance team is reviewing your details. No further action is needed at this time.</p>
+</div>
+<p style="font-size: 14px; color: #64748b;">You will receive an email notification once your review is finalized.</p>
+{% endblock %}

@@ -1,0 +1,32 @@
+{% extends "emails/base.html" %}
+{% block title %}Buy Order Created - {{ reference_number }}{% endblock %}
+{% block content %}
+<h2 style="margin-top: 0; color: #0f172a;">Buy Order Created</h2>
+<p>Hello {{ recipient_name }},</p>
+<p>Your buy order <strong>{{ reference_number }}</strong> has been created successfully.</p>
+
+<table role="presentation" width="100%" style="margin: 20px 0; border-collapse: collapse; font-size: 14px;">
+    <tr style="border-bottom: 1px solid #e2e8f0;">
+        <td style="padding: 10px 0; color: #64748b;">Order Reference:</td>
+        <td style="padding: 10px 0; font-weight: 600; text-align: right; color: #0f172a;">{{ reference_number }}</td>
+    </tr>
+    <tr style="border-bottom: 1px solid #e2e8f0;">
+        <td style="padding: 10px 0; color: #64748b;">USDT Amount:</td>
+        <td style="padding: 10px 0; font-weight: 600; text-align: right; color: #0f172a;">{{ usdt_amount }} USDT</td>
+    </tr>
+    <tr style="border-bottom: 1px solid #e2e8f0;">
+        <td style="padding: 10px 0; color: #64748b;">Exchange Rate:</td>
+        <td style="padding: 10px 0; font-weight: 600; text-align: right; color: #0f172a;">MWK {{ rate }} / USDT</td>
+    </tr>
+    <tr style="border-bottom: 1px solid #e2e8f0;">
+        <td style="padding: 10px 0; color: #64748b;">Total Payable:</td>
+        <td style="padding: 10px 0; font-weight: 700; text-align: right; color: #0052FF;">MWK {{ total_payable_mwk }}</td>
+    </tr>
+    <tr>
+        <td style="padding: 10px 0; color: #64748b;">Payment Method:</td>
+        <td style="padding: 10px 0; font-weight: 600; text-align: right; color: #0f172a;">{{ payment_method }}</td>
+    </tr>
+</table>
+
+<p style="font-size: 14px; color: #64748b;">Please complete your mobile money payment using reference <strong>{{ payment_reference }}</strong> before the order expires.</p>
+{% endblock %}

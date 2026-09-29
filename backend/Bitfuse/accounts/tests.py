@@ -853,6 +853,143 @@ class BlnkRepairTests(TestCase):
         self.assertIn("Status: SUCCESS", output)
 
 
+from accounts.models import EmailNotification
+from accounts.email_service import EmailNotificationService
+
+
+class EmailNotificationSystemTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        EmailNotification.objects.all().delete()
+        User.objects.all().delete()
+
+        self.user = User.objects.create_user(
+            username="email_test_user",
+            email="email_test@example.com",
+            phone_number="+265999888111",
+            first_name="Email",
+            last_name="Tester",
+            password="Password123!",
+            email_verified=True,
+            phone_verified=True,
+            verification_status="verified",
+        )
+
+    def test_kyc_email_notifications(self):
+        # KYC submitted
+        res_sub = EmailNotificationService.send_kyc_submitted_email(self.user)
+        self.assertTrue(res_sub)
+        self.assertEqual(EmailNotification.objects.filter(event_type="kyc_submitted", recipient=self.user.email, status="sent").count(), 1)
+
+        # KYC approved
+        res_app = EmailNotificationService.send_kyc_approved_email(self.user)
+        self.assertTrue(res_app)
+        self.assertEqual(EmailNotification.objects.filter(event_type="kyc_approved", recipient=self.user.email, status="sent").count(), 1)
+
+        # KYC rejected
+        res_rej = EmailNotificationService.send_kyc_rejected_email(self.user, reason="Illegible ID")
+        self.assertTrue(res_rej)
+        self.assertEqual(EmailNotification.objects.filter(event_type="kyc_rejected", recipient=self.user.email, status="sent").count(), 1)
+
+        # KYC resubmission required
+        res_req = EmailNotificationService.send_kyc_resubmission_required_email(self.user, reason="Blurry selfie")
+        self.assertTrue(res_req)
+        self.assertEqual(EmailNotification.objects.filter(event_type="kyc_resubmission_required", recipient=self.user.email, status="sent").count(), 1)
+
+    def test_buy_and_sell_order_email_notifications(self):
+        from orders.models import Order
+        buy_order = Order.objects.create(
+            reference_number="BF-BUY-EMAIL-1",
+            user=self.user,
+            order_type="buy",
+            mwk_amount=Decimal("185000"),
+            usdt_amount=Decimal("100"),
+            rate=Decimal("1850"),
+            fee_percent=Decimal("1"),
+            fee_amount=Decimal("1850"),
+            payment_method="airtel_money",
+            phone="+265999888111",
+            status="awaiting_payment",
+        )
+
+        res_buy = EmailNotificationService.send_buy_order_created_email(buy_order)
+        self.assertTrue(res_buy)
+        self.assertEqual(EmailNotification.objects.filter(event_type="buy_order_created", reference_id="BF-BUY-EMAIL-1", status="sent").count(), 1)
+
+        res_credited = EmailNotificationService.send_usdt_credited_email(buy_order)
+        self.assertTrue(res_credited)
+        self.assertEqual(EmailNotification.objects.filter(event_type="buy_usdt_credited", reference_id="BF-BUY-EMAIL-1", status="sent").count(), 1)
+
+    def test_withdrawal_and_p2p_email_notifications(self):
+        from withdrawals.models import Withdrawal
+        withdrawal = Withdrawal.objects.create(
+            user=self.user,
+            asset="USDT",
+            network="TRON",
+            amount=Decimal("50.00"),
+            fee=Decimal("0.50"),
+            net_amount=Decimal("49.50"),
+            destination_address="TY4hG6Xz6m93ssVjUr3NZsSXYhxXabc123",
+            status="PROCESSING",
+        )
+
+        res_w = EmailNotificationService.send_withdrawal_requested_email(withdrawal)
+        self.assertTrue(res_w)
+        self.assertEqual(EmailNotification.objects.filter(event_type="withdrawal_requested", reference_id=str(withdrawal.id), status="sent").count(), 1)
+
+    def test_email_idempotency_prevents_duplicate_sends(self):
+        from orders.models import Order
+        buy_order = Order.objects.create(
+            reference_number="BF-BUY-IDEMP-1",
+            user=self.user,
+            order_type="buy",
+            mwk_amount=Decimal("185000"),
+            usdt_amount=Decimal("100"),
+            rate=Decimal("1850"),
+            fee_percent=Decimal("1"),
+            fee_amount=Decimal("1850"),
+            payment_method="airtel_money",
+            phone="+265999888111",
+            status="completed",
+        )
+
+        # First send
+        res1 = EmailNotificationService.send_usdt_credited_email(buy_order)
+        self.assertTrue(res1)
+
+        # Second send (duplicate trigger)
+        res2 = EmailNotificationService.send_usdt_credited_email(buy_order)
+        self.assertTrue(res2)
+
+        # Only 1 EmailNotification row created in DB
+        self.assertEqual(EmailNotification.objects.filter(event_type="buy_usdt_credited", reference_id="BF-BUY-IDEMP-1").count(), 1)
+
+    def test_email_delivery_failure_does_not_raise_exception(self):
+        from orders.models import Order
+        buy_order = Order.objects.create(
+            reference_number="BF-BUY-FAIL-1",
+            user=self.user,
+            order_type="buy",
+            mwk_amount=Decimal("185000"),
+            usdt_amount=Decimal("100"),
+            rate=Decimal("1850"),
+            fee_percent=Decimal("1"),
+            fee_amount=Decimal("1850"),
+            payment_method="airtel_money",
+            phone="+265999888111",
+            status="completed",
+        )
+
+        with mock.patch("accounts.email_service.send_mail", side_effect=Exception("SMTP Connection Refused")):
+            res = EmailNotificationService.send_usdt_credited_email(buy_order)
+            self.assertFalse(res)
+
+        # Notification record created with status="failed"
+        notif = EmailNotification.objects.get(event_type="buy_usdt_credited", reference_id="BF-BUY-FAIL-1")
+        self.assertEqual(notif.status, "failed")
+        self.assertIn("SMTP Connection Refused", notif.last_error)
+
+
 class TradingEligibilityTests(TestCase):
     def setUp(self):
         cache.clear()

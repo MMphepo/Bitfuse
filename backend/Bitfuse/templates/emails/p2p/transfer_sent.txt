@@ -1,0 +1,9 @@
+Bitfuse
+
+Internal Transfer Sent
+
+Hello {{ recipient_name }},
+
+You sent {{ amount }} {{ currency }} to {{ recipient_username }} on Bitfuse.
+
+Reference: {{ reference }}

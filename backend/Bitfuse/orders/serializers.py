@@ -3,6 +3,7 @@ from decimal import Decimal
 from rest_framework import serializers
 
 from accounts.services import ensure_user_wallets, fetch_wallet_balance
+from accounts.email_service import EmailNotificationService
 from .models import Order, OrderAuditLog
 from .payment_methods import is_supported, payment_methods
 from .services import (
@@ -75,6 +76,7 @@ class CreateBuyOrderSerializer(serializers.Serializer):
             f"MWK {order.total_payable_mwk} using reference {order.payment_reference}.",
             order.reference_number,
         )
+        EmailNotificationService.send_buy_order_created_email(order)
         return order
 
 
@@ -124,6 +126,7 @@ class CreateSellOrderSerializer(serializers.Serializer):
 
         # Freeze the seller's USDT immediately (Blnk escrow movement).
         lock_sell_order(order)
+        EmailNotificationService.send_sell_order_created_email(order)
         return order
 
 

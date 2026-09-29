@@ -1,0 +1,11 @@
+Bitfuse
+
+Sell Order Update
+
+Hello {{ recipient_name }},
+
+Your sell order {{ reference_number }} has been cancelled or rejected.
+
+{% if reason %}Reason: {{ reason }}{% endif %}
+
+Any locked escrow USDT for this order has been returned to your wallet balance.

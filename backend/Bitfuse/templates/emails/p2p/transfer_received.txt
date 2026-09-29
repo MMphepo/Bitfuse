@@ -1,0 +1,11 @@
+Bitfuse
+
+Internal Transfer Received
+
+Hello {{ recipient_name }},
+
+You received {{ amount }} {{ currency }} from {{ sender_username }} on Bitfuse.
+
+Reference: {{ reference }}
+
+View wallet: {{ frontend_url }}/wallets

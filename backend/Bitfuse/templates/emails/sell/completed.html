@@ -1,0 +1,11 @@
+{% extends "emails/base.html" %}
+{% block title %}Sell Payout Completed - {{ reference_number }}{% endblock %}
+{% block content %}
+<h2 style="margin-top: 0; color: #0f172a;">Sell Order Completed</h2>
+<p>Hello {{ recipient_name }},</p>
+<p>Your sell order <strong>{{ reference_number }}</strong> has been completed!</p>
+<div style="background-color: #f0fdf4; border-left: 4px solid #16a34a; padding: 16px; margin: 20px 0; border-radius: 4px;">
+    <p style="margin: 0; font-weight: 700; font-size: 18px; color: #166534;">MWK {{ mwk_amount }} Dispatched</p>
+    <p style="margin: 4px 0 0 0; font-size: 14px; color: #15803d;">Mobile money payout sent to {{ phone }} on {{ timestamp }}.</p>
+</div>
+{% endblock %}

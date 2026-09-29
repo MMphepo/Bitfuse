@@ -1,0 +1,11 @@
+{% extends "emails/base.html" %}
+{% block title %}Buy Order Expired - {{ reference_number }}{% endblock %}
+{% block content %}
+<h2 style="margin-top: 0; color: #0f172a;">Buy Order Expired</h2>
+<p>Hello {{ recipient_name }},</p>
+<p>Your buy order <strong>{{ reference_number }}</strong> expired before payment details were submitted.</p>
+<p style="font-size: 14px; color: #64748b;">Locked rates are held for a limited payment window. You can create a new buy order anytime on Bitfuse.</p>
+<div style="margin: 28px 0;">
+    <a href="{{ frontend_url }}/buy" style="background-color: #0052FF; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">Create New Order</a>
+</div>
+{% endblock %}

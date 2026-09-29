@@ -1,0 +1,11 @@
+Bitfuse
+
+Withdrawal Failed
+
+Hello {{ recipient_name }},
+
+Your withdrawal of {{ amount }} {{ asset }} on {{ network }} failed.
+
+{% if reason %}Reason: {{ reason }}{% endif %}
+
+Any reserved funds have been returned to your wallet balance.

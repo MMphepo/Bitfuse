@@ -338,6 +338,9 @@ class PasswordResetConfirmView(APIView):
 
         user = EmailService.confirm_password_reset(token, new_password)
 
+        from accounts.email_service import EmailNotificationService
+        EmailNotificationService.send_password_changed_email(user)
+
         return Response(
             {
                 "success": True,

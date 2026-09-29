@@ -1,0 +1,11 @@
+Bitfuse
+
+Buy Order Update
+
+Hello {{ recipient_name }},
+
+Payment for buy order {{ reference_number }} could not be verified.
+
+{% if reason %}Reason: {{ reason }}{% endif %}
+
+If you have already paid, please contact support@bitfuse.mw with your transaction details.

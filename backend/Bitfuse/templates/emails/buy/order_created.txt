@@ -1,0 +1,17 @@
+Bitfuse
+
+Buy Order Created
+
+Hello {{ recipient_name }},
+
+Your buy order {{ reference_number }} has been created.
+
+Order Reference: {{ reference_number }}
+USDT Amount: {{ usdt_amount }} USDT
+Exchange Rate: MWK {{ rate }} / USDT
+Total Payable: MWK {{ total_payable_mwk }}
+Payment Method: {{ payment_method }}
+
+Payment Reference: {{ payment_reference }}
+
+Please complete your payment before the rate lock window elapses.

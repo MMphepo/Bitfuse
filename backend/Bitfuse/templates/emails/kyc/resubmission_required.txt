@@ -1,0 +1,12 @@
+Bitfuse
+
+Action Required: KYC Resubmission
+
+Hello {{ recipient_name }},
+
+Additional information or clearer documents are needed to finalize your identity verification.
+
+{% if reason %}Note: {{ reason }}{% endif %}
+
+Please resubmit your verification documents here:
+{{ frontend_url }}/kyc

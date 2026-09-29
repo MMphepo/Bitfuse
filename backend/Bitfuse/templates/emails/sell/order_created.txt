@@ -1,0 +1,15 @@
+Bitfuse
+
+Sell Order Created
+
+Hello {{ recipient_name }},
+
+Your sell order {{ reference_number }} has been created.
+
+Order Reference: {{ reference_number }}
+USDT Amount: {{ usdt_amount }} USDT
+Exchange Rate: MWK {{ rate }} / USDT
+Expected Net Payout: MWK {{ mwk_amount }}
+Payout Mobile Money Phone: {{ phone }}
+
+Your USDT is held in platform escrow pending mobile money payout.

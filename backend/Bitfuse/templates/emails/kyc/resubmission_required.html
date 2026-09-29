@@ -1,0 +1,17 @@
+{% extends "emails/base.html" %}
+{% block title %}Action Required: Bitfuse KYC Resubmission{% endblock %}
+{% block content %}
+<h2 style="margin-top: 0; color: #0f172a;">Action Required: KYC Resubmission</h2>
+<p>Hello {{ recipient_name }},</p>
+<p>Action is required on your identity verification (KYC) submission.</p>
+{% if reason %}
+<div style="background-color: #fffbebfb; border-left: 4px solid #d97706; padding: 16px; margin: 20px 0; border-radius: 4px;">
+    <p style="margin: 0; font-weight: 600; color: #92400e;">Note from Reviewer:</p>
+    <p style="margin: 4px 0 0 0; font-size: 14px; color: #b45309;">{{ reason }}</p>
+</div>
+{% endif %}
+<p style="font-size: 14px; color: #64748b;">Please resubmit your verification documents using the link below:</p>
+<div style="margin: 28px 0;">
+    <a href="{{ frontend_url }}/kyc" style="background-color: #0052FF; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">Resubmit Documents</a>
+</div>
+{% endblock %}

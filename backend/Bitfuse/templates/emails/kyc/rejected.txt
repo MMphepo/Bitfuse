@@ -1,0 +1,12 @@
+Bitfuse
+
+KYC Review Update
+
+Hello {{ recipient_name }},
+
+Your identity verification submission could not be verified.
+
+{% if reason %}Reason: {{ reason }}{% endif %}
+
+Please log in to your account and submit valid verification documents:
+{{ frontend_url }}/kyc

@@ -1,0 +1,14 @@
+{% extends "emails/base.html" %}
+{% block title %}Withdrawal Confirmed - {{ withdrawal_id }}{% endblock %}
+{% block content %}
+<h2 style="margin-top: 0; color: #0f172a;">Withdrawal Confirmed</h2>
+<p>Hello {{ recipient_name }},</p>
+<p>Your withdrawal of <strong>{{ net_amount }} {{ asset }}</strong> on {{ network }} has been confirmed on-chain!</p>
+<div style="background-color: #f0fdf4; border-left: 4px solid #16a34a; padding: 16px; margin: 20px 0; border-radius: 4px;">
+    <p style="margin: 0; font-weight: 600; color: #166534;">Blockchain Status: Confirmed</p>
+    {% if tx_hash %}
+    <p style="margin: 4px 0 0 0; font-size: 13px; font-family: monospace; color: #15803d;">Tx Hash: {{ tx_hash }}</p>
+    {% endif %}
+</div>
+<p style="font-size: 14px; color: #64748b;">Destination: <span style="font-family: monospace;">{{ destination_address }}</span></p>
+{% endblock %}

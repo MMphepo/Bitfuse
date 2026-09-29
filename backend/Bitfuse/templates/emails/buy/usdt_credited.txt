@@ -1,0 +1,11 @@
+Bitfuse
+
+USDT Credited
+
+Hello {{ recipient_name }},
+
+Your buy order {{ reference_number }} has been completed!
+
++ {{ usdt_amount }} USDT has been credited to your Bitfuse wallet ledger on {{ timestamp }}.
+
+View wallet: {{ frontend_url }}/wallets

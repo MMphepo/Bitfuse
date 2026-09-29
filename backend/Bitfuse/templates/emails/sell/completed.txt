@@ -1,0 +1,9 @@
+Bitfuse
+
+Sell Order Completed
+
+Hello {{ recipient_name }},
+
+Your sell order {{ reference_number }} has been completed.
+
+MWK {{ mwk_amount }} mobile money payout has been sent to {{ phone }} on {{ timestamp }}.

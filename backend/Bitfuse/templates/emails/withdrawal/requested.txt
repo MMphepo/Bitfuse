@@ -1,0 +1,14 @@
+Bitfuse
+
+Withdrawal Requested
+
+Hello {{ recipient_name }},
+
+We received your request to withdraw {{ amount }} {{ asset }} on {{ network }}.
+
+Gross Amount: {{ amount }} {{ asset }}
+Network Fee: {{ fee }} {{ asset }}
+Net Amount: {{ net_amount }} {{ asset }}
+Destination Address: {{ destination_address }}
+
+Your funds are reserved and being prepared for blockchain broadcast.
