@@ -13,8 +13,9 @@ class BlnkClient:
     def __init__(self, max_retries: int = 1, backoff_factor: float = 0.5, timeout: float = 3.0):
         self.base_url = settings.BLNK_BASE_URL.rstrip('/') if settings.BLNK_BASE_URL else ""
         self.headers = {"Content-Type": "application/json"}
-        if getattr(settings, "BLNK_SECRET_KEY", None):
-            self.headers["X-Blnk-Key"] = settings.BLNK_SECRET_KEY
+        api_key = getattr(settings, "BLNK_API_KEY", "")
+        if api_key:
+            self.headers["X-Blnk-Key"] = api_key
         self.max_retries = max_retries
         self.backoff_factor = backoff_factor
         self.default_timeout = timeout
