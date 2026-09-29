@@ -222,6 +222,8 @@ class ResendEmailVerificationView(APIView):
         if user and not user.email_verified:
             try:
                 EmailService.send_verification_email(user)
+            except ValidationError:
+                raise
             except Exception as exc:
                 import logging
                 logging.getLogger(__name__).warning("[EMAIL_RESEND_ERROR] Resend verification error: %s", exc)
