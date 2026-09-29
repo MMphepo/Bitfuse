@@ -160,7 +160,7 @@ REST_FRAMEWORK = {
 }
 
 BLNK_BASE_URL = config("BLNK_BASE_URL", default="https://bitfuse-blnk-server-qfn2.onrender.com")
-BLNK_SECRET_KEY = config("BLNK_SECRET_KEY", default="")
+BLNK_API_KEY = config("BLNK_API_KEY", default="")
 
 CURRENCY_PRECISION = {
     "MWK": 100,     # 2 decimal places

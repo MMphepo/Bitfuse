@@ -3,6 +3,7 @@ import requests
 from decimal import Decimal
 from unittest import mock
 from io import StringIO
+from django.conf import settings
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
@@ -697,6 +698,20 @@ class BlnkRepairTests(TestCase):
         self.assertEqual(self.user.blnk_ledger_id, "ldg_existing_valid")
         mock_client.create_ledger.assert_not_called()
 
+    def test_blnk_api_key_header_configuration(self):
+        from accounts.blnk_client import BlnkClient
+        with override_settings(BLNK_API_KEY="test_api_key_64_chars_long_1234567890_abcdefghijklmnopqrstuvwxyz"):
+            client = BlnkClient()
+            self.assertEqual(client.headers.get("X-Blnk-Key"), "test_api_key_64_chars_long_1234567890_abcdefghijklmnopqrstuvwxyz")
+
+    def test_blnk_secret_key_not_required(self):
+        from accounts.blnk_client import BlnkClient
+        with override_settings(BLNK_API_KEY="my_api_key"):
+            if hasattr(settings, "BLNK_SECRET_KEY"):
+                delattr(settings, "BLNK_SECRET_KEY")
+            client = BlnkClient()
+            self.assertEqual(client.headers.get("X-Blnk-Key"), "my_api_key")
+
     def test_blnk_auth_failure_does_not_recreate(self):
         mock_client = mock.MagicMock()
         resp_401 = mock.MagicMock()
@@ -708,6 +723,36 @@ class BlnkRepairTests(TestCase):
             with self.assertRaises(requests.HTTPError):
                 ensure_user_wallets(self.user)
 
+        mock_client.create_ledger.assert_not_called()
+
+    def test_blnk_403_forbidden_does_not_recreate(self):
+        mock_client = mock.MagicMock()
+        resp_403 = mock.MagicMock()
+        resp_403.status_code = 403
+        http_err = requests.HTTPError("403 Forbidden", response=resp_403)
+        mock_client.ledger_exists.side_effect = http_err
+
+        with mock.patch("accounts.services.BlnkClient", return_value=mock_client):
+            with self.assertRaises(requests.HTTPError):
+                ensure_user_wallets(self.user)
+
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.blnk_ledger_id, "ldg_existing_valid")
+        mock_client.create_ledger.assert_not_called()
+
+    def test_blnk_500_server_error_does_not_recreate(self):
+        mock_client = mock.MagicMock()
+        resp_500 = mock.MagicMock()
+        resp_500.status_code = 500
+        http_err = requests.HTTPError("500 Internal Server Error", response=resp_500)
+        mock_client.ledger_exists.side_effect = http_err
+
+        with mock.patch("accounts.services.BlnkClient", return_value=mock_client):
+            with self.assertRaises(requests.HTTPError):
+                ensure_user_wallets(self.user)
+
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.blnk_ledger_id, "ldg_existing_valid")
         mock_client.create_ledger.assert_not_called()
 
     def test_idempotency_multiple_calls_do_not_duplicate_wallets(self):
