@@ -216,13 +216,17 @@ class EmailService:
 
     @classmethod
     def send_verification_email(cls, user) -> str:
-        # Rate limit: max 5 verification emails per hour
+        if user.email_verified:
+            return ""
+
+        # Rate limit: max requests per hour
+        max_requests_per_hour = getattr(settings, "EMAIL_VERIFICATION_MAX_REQUESTS_PER_HOUR", 5)
         one_hour_ago = timezone.now() - timedelta(hours=1)
         recent_count = EmailVerificationToken.objects.filter(
             user=user,
             created_at__gte=one_hour_ago,
         ).count()
-        if recent_count >= 5:
+        if recent_count >= max_requests_per_hour:
             raise ValidationError({"email": ["Too many verification emails requested. Please wait before retrying."]})
 
         # Invalidate previous unused tokens for user
@@ -230,7 +234,8 @@ class EmailService:
 
         raw_token = secrets.token_urlsafe(32)
         token_hash = cls._hash_token(raw_token)
-        expires_at = timezone.now() + timedelta(hours=24)
+        expiry_minutes = getattr(settings, "EMAIL_VERIFICATION_TOKEN_EXPIRY_MINUTES", 30)
+        expires_at = timezone.now() + timedelta(minutes=expiry_minutes)
 
         EmailVerificationToken.objects.create(
             user=user,
@@ -238,45 +243,84 @@ class EmailService:
             expires_at=expires_at,
         )
 
-        subject = "Verify your Bitfuse Email Address"
-        message = (
-            f"Hello {user.first_name or user.username},\n\n"
-            f"Thank you for signing up with Bitfuse.\n"
-            f"Your email verification token is:\n\n{raw_token}\n\n"
-            f"This token is valid for 24 hours.\n"
-            f"If you did not create a Bitfuse account, please ignore this email."
+        frontend_url = getattr(settings, "FRONTEND_URL", "https://bitfuse.mw").rstrip("/")
+        verification_url = f"{frontend_url}/verify-email?token={raw_token}"
+
+        subject = "Verify your Bitfuse email address"
+        plain_message = (
+            f"Bitfuse\n\n"
+            f"Verify your email address\n\n"
+            f"Welcome to Bitfuse.\n\n"
+            f"Please verify your email address to complete your account setup.\n\n"
+            f"Verification Link: {verification_url}\n\n"
+            f"This verification link expires in {expiry_minutes} minutes.\n\n"
+            f"If you did not create a Bitfuse account, you can safely ignore this email.\n\n"
+            f"Bitfuse"
         )
 
-        send_mail(
-            subject=subject,
-            message=message,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[user.email],
-            fail_silently=False,
+        html_message = (
+            f"<!DOCTYPE html><html><body>"
+            f"<div style='font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #333;'>"
+            f"<h2 style='color: #0052FF;'>Bitfuse</h2>"
+            f"<h3>Verify your email address</h3>"
+            f"<p>Welcome to Bitfuse.</p>"
+            f"<p>Please verify your email address to complete your account setup.</p>"
+            f"<div style='margin: 30px 0;'>"
+            f"<a href='{verification_url}' style='background-color: #0052FF; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;'>Verify my email</a>"
+            f"</div>"
+            f"<p style='font-size: 14px; color: #666;'>This verification link expires in {expiry_minutes} minutes.</p>"
+            f"<p style='font-size: 14px; color: #666;'>Or copy and paste this URL into your browser: <br/><a href='{verification_url}'>{verification_url}</a></p>"
+            f"<p style='font-size: 14px; color: #888;'>If you did not create a Bitfuse account, you can safely ignore this email.</p>"
+            f"</div>"
+            f"</body></html>"
         )
+
+        try:
+            send_mail(
+                subject=subject,
+                message=plain_message,
+                html_message=html_message,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[user.email],
+                fail_silently=False,
+            )
+        except Exception as exc:
+            logger.error(f"[EMAIL_DELIVERY_FAILURE] Verification email to user {user.id} failed: {exc}")
+
         return raw_token
 
     @classmethod
     def verify_email_token(cls, raw_token: str) -> User:
+        if not raw_token or not str(raw_token).strip():
+            raise ValidationError({"code": "INVALID_TOKEN", "message": "This verification link is invalid."})
+
         token_hash = cls._hash_token(raw_token.strip())
         now = timezone.now()
 
-        email_token = EmailVerificationToken.objects.filter(
-            token_hash=token_hash,
-            used=False,
-            expires_at__gt=now,
-        ).first()
+        from django.db import transaction
+        with transaction.atomic():
+            email_token = EmailVerificationToken.objects.select_for_update().filter(
+                token_hash=token_hash
+            ).first()
 
-        if not email_token:
-            raise ValidationError({"token": ["Invalid or expired verification token."]})
+            if not email_token:
+                raise ValidationError({"code": "INVALID_TOKEN", "message": "This verification link is invalid."})
 
-        email_token.used = True
-        email_token.save(update_fields=["used"])
+            if email_token.used:
+                raise ValidationError({"code": "TOKEN_ALREADY_USED", "message": "This verification link has already been used."})
 
-        user = email_token.user
-        user.email_verified = True
-        user.save(update_fields=["email_verified"])
-        return user
+            if email_token.expires_at <= now:
+                raise ValidationError({"code": "TOKEN_EXPIRED", "message": "This verification link has expired."})
+
+            email_token.used = True
+            email_token.save(update_fields=["used"])
+
+            user = email_token.user
+            user.email_verified = True
+            user.save(update_fields=["email_verified"])
+
+            logger.info(f"[EMAIL_VERIFIED] User {user.id} email address verified successfully.")
+            return user
 
     @classmethod
     def send_password_reset_email(cls, email: str) -> str:

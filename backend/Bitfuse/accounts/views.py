@@ -163,21 +163,46 @@ class LogoutView(APIView):
 class VerifyEmailView(APIView):
     permission_classes = [permissions.AllowAny]
 
+    def get(self, request):
+        token = request.query_params.get("token") or request.data.get("token")
+        return self._verify(token)
+
     def post(self, request):
-        token = request.data.get("token")
+        token = request.data.get("token") or request.query_params.get("token")
+        return self._verify(token)
+
+    def _verify(self, token):
         if not token:
-            raise ValidationError({"token": ["Verification token is required."]})
+            return Response(
+                {"success": False, "code": "INVALID_TOKEN", "message": "This verification link is invalid."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        user = EmailService.verify_email_token(token)
-
-        return Response(
-            {
-                "success": True,
-                "message": "Email address verified successfully.",
-                "data": {"user": UserSerializer(user).data},
-            },
-            status=status.HTTP_200_OK,
-        )
+        try:
+            user = EmailService.verify_email_token(token)
+            return Response(
+                {
+                    "success": True,
+                    "code": "EMAIL_VERIFIED",
+                    "message": "Email verified successfully.",
+                    "data": {"user": UserSerializer(user).data},
+                },
+                status=status.HTTP_200_OK,
+            )
+        except ValidationError as exc:
+            detail = exc.detail
+            if isinstance(detail, dict) and "code" in detail:
+                code_val = detail["code"]
+                msg_val = detail.get("message", "Email verification failed.")
+                return Response(
+                    {"success": False, "code": code_val, "message": msg_val},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            msg = str(detail.get("token", [str(detail)])[0]) if isinstance(detail, dict) else str(detail)
+            return Response(
+                {"success": False, "code": "INVALID_TOKEN", "message": msg},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
 
 class ResendEmailVerificationView(APIView):
@@ -191,22 +216,21 @@ class ResendEmailVerificationView(APIView):
 
         if request.user and request.user.is_authenticated:
             user = request.user
-        elif email:
-            user = User.objects.filter(email__iexact=email.strip()).first()
+        elif email and str(email).strip():
+            user = User.objects.filter(email__iexact=str(email).strip()).first()
 
-        if user:
-            if user.email_verified:
-                return Response(
-                    {"success": True, "message": "Your email address is already verified."},
-                    status=status.HTTP_200_OK,
-                )
-            EmailService.send_verification_email(user)
+        if user and not user.email_verified:
+            try:
+                EmailService.send_verification_email(user)
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning("[EMAIL_RESEND_ERROR] Resend verification error: %s", exc)
 
         # Standard generic response to prevent email enumeration
         return Response(
             {
                 "success": True,
-                "message": "If an account exists for that email, a verification message has been sent.",
+                "message": "If an account exists with this email address, a verification email will be sent.",
             },
             status=status.HTTP_200_OK,
         )

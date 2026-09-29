@@ -2,6 +2,21 @@ from rest_framework.permissions import BasePermission
 from rest_framework.exceptions import PermissionDenied
 
 
+class IsEmailVerified(BasePermission):
+    """
+    Allows access only to users whose email address is verified.
+    """
+    message = "Please verify your email address before using this feature."
+
+    def has_permission(self, request, view):
+        user = request.user
+        if not user or not user.is_authenticated:
+            return False
+        if not user.email_verified:
+            raise PermissionDenied("Please verify your email address before using this feature.")
+        return True
+
+
 class IsKycVerified(BasePermission):
     """
     Allows access only to users whose KYC verification status is 'verified'.
