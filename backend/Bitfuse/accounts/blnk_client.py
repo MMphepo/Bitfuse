@@ -143,6 +143,49 @@ class BlnkClient:
             },
         )
 
+    def get_ledger(self, ledger_id: str):
+        """Fetch ledger details from Blnk."""
+        logger.debug(f"[BLNK] Fetching ledger: ledger_id={ledger_id!r}")
+        return self._request("GET", f"/ledgers/{ledger_id}")
+
+    def ledger_exists(self, ledger_id: str) -> bool:
+        """Check if a ledger exists in Blnk.
+
+        Returns True if the ledger exists.
+        Returns False ONLY if Blnk explicitly responds with 404 Not Found.
+        Raises HTTPError/Timeout/ConnectionError for any service outage or non-404 error.
+        """
+        if not ledger_id or not str(ledger_id).strip():
+            return False
+        try:
+            self.get_ledger(ledger_id)
+            logger.debug(f"[BLNK_LEDGER_VALIDATE] Ledger {ledger_id} exists in Blnk.")
+            return True
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                logger.warning(f"[BLNK_LEDGER_STALE] Ledger {ledger_id} returned 404 Not Found in Blnk.")
+                return False
+            raise exc
+
+    def balance_exists(self, balance_id: str) -> bool:
+        """Check if a balance exists in Blnk.
+
+        Returns True if the balance exists.
+        Returns False ONLY if Blnk explicitly responds with 404 Not Found.
+        Raises HTTPError/Timeout/ConnectionError for any service outage or non-404 error.
+        """
+        if not balance_id or not str(balance_id).strip():
+            return False
+        try:
+            self.get_balance(balance_id)
+            logger.debug(f"[BLNK_BALANCE_VALIDATE] Balance {balance_id} exists in Blnk.")
+            return True
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                logger.warning(f"[BLNK_BALANCE_STALE] Balance {balance_id} returned 404 Not Found in Blnk.")
+                return False
+            raise exc
+
     def get_balance(self, balance_id: str):
         """Fetch a balance's current numeric value from Blnk."""
         logger.debug(f"[BLNK] Fetching balance: balance_id={balance_id!r}")

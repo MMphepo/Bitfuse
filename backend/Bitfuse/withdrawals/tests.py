@@ -39,6 +39,7 @@ class WithdrawalSystemTests(TestCase):
             email_verified=True,
             phone_verified=True,
             verification_status="verified",
+            blnk_ledger_id="alice-ledger",
         )
         # 2. Create another user to test cross-user access
         self.other_user = User.objects.create_user(
@@ -49,6 +50,7 @@ class WithdrawalSystemTests(TestCase):
             email_verified=True,
             phone_verified=True,
             verification_status="verified",
+            blnk_ledger_id="bob-ledger",
         )
         # 3. Create unverified user
         self.unverified_user = User.objects.create_user(
@@ -57,6 +59,7 @@ class WithdrawalSystemTests(TestCase):
             password="password123",
             phone_number="+265991444444",
             verification_status="unverified",
+            blnk_ledger_id="charlie-ledger",
         )
 
         # 4. Set up platform account and user wallets
@@ -73,7 +76,17 @@ class WithdrawalSystemTests(TestCase):
         # 6. Mock BlnkClient and fetch_wallet_balance
         self.blnk_patcher = mock.patch("withdrawals.services.withdrawal_service.BlnkClient")
         self.mock_blnk = self.blnk_patcher.start()
+        self.mock_blnk.return_value.ledger_exists.return_value = True
+        self.mock_blnk.return_value.balance_exists.return_value = True
         self.mock_blnk.return_value.create_transaction.side_effect = lambda **kwargs: {
+            "transaction_id": f"txn-{kwargs.get('reference', 'ref')}"
+        }
+
+        self.accounts_blnk_patcher = mock.patch("accounts.services.BlnkClient")
+        self.mock_accounts_blnk = self.accounts_blnk_patcher.start()
+        self.mock_accounts_blnk.return_value.ledger_exists.return_value = True
+        self.mock_accounts_blnk.return_value.balance_exists.return_value = True
+        self.mock_accounts_blnk.return_value.create_transaction.side_effect = lambda **kwargs: {
             "transaction_id": f"txn-{kwargs.get('reference', 'ref')}"
         }
 
@@ -84,7 +97,7 @@ class WithdrawalSystemTests(TestCase):
         self.mock_balances = self.balance_patcher.start()
 
         self.wallets_patcher = mock.patch(
-            "withdrawals.services.withdrawal_service.ensure_user_wallets"
+            "accounts.services.ensure_user_wallets"
         )
         self.mock_ensure_wallets = self.wallets_patcher.start()
         self.mock_ensure_wallets.side_effect = lambda u: (
@@ -341,6 +354,7 @@ class BscWithdrawalTests(TestCase):
             email_verified=True,
             phone_verified=True,
             verification_status="verified",
+            blnk_ledger_id="bsc-alice-ledger",
         )
         make_platform_account()
         Wallet.objects.create(user=self.user, currency="USDT", blnk_balance_id="bsc-alice-usdt")
@@ -357,7 +371,17 @@ class BscWithdrawalTests(TestCase):
 
         self.workers_blnk_patcher = mock.patch("withdrawals.services.workers.BlnkClient")
         self.mock_workers_blnk = self.workers_blnk_patcher.start()
+        self.mock_workers_blnk.return_value.ledger_exists.return_value = True
+        self.mock_workers_blnk.return_value.balance_exists.return_value = True
         self.mock_workers_blnk.return_value.create_transaction.side_effect = lambda **kwargs: {
+            "transaction_id": f"bsc-deposit-txn-{kwargs.get('reference', 'ref')}"
+        }
+
+        self.accounts_blnk_patcher = mock.patch("accounts.services.BlnkClient")
+        self.mock_accounts_blnk = self.accounts_blnk_patcher.start()
+        self.mock_accounts_blnk.return_value.ledger_exists.return_value = True
+        self.mock_accounts_blnk.return_value.balance_exists.return_value = True
+        self.mock_accounts_blnk.return_value.create_transaction.side_effect = lambda **kwargs: {
             "transaction_id": f"bsc-deposit-txn-{kwargs.get('reference', 'ref')}"
         }
 
