@@ -276,7 +276,7 @@ class EmailService:
         )
 
         try:
-            send_mail(
+            sent_count = send_mail(
                 subject=subject,
                 message=plain_message,
                 html_message=html_message,
@@ -284,8 +284,9 @@ class EmailService:
                 recipient_list=[user.email],
                 fail_silently=False,
             )
+            logger.info(f"[EMAIL_SENT] Verification email sent to {user.email} (sent_count={sent_count}, backend={settings.EMAIL_BACKEND})")
         except Exception as exc:
-            logger.error(f"[EMAIL_DELIVERY_FAILURE] Verification email to user {user.id} failed: {exc}")
+            logger.error(f"[EMAIL_DELIVERY_FAILURE] Verification email to user {user.id} ({user.email}) failed: {exc}")
 
         return raw_token
 
