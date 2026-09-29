@@ -49,17 +49,19 @@ class Command(BaseCommand):
                 platform = get_or_create_platform_account()
         except Exception as e:
             self.stdout.write(self.style.ERROR(f"Failed to get_or_create_platform_account: {str(e)}"))
-            # Fallback
-            platform = PlatformAccount.objects.first()
-            if not platform:
-                platform = PlatformAccount.objects.create(
-                    ledger_id="ledger",
-                    mwk_float_balance_id="mwk-float",
-                    usdt_float_balance_id="usdt-float",
-                    mwk_external_contra_id="mwk-contra",
-                    usdt_external_contra_id="usdt-contra",
-                    usdt_frozen_balance_id="usdt-frozen",
-                )
+            if is_testing:
+                platform = PlatformAccount.objects.first()
+                if not platform:
+                    platform = PlatformAccount.objects.create(
+                        ledger_id="ledger",
+                        mwk_float_balance_id="mwk-float",
+                        usdt_float_balance_id="usdt-float",
+                        mwk_external_contra_id="mwk-contra",
+                        usdt_external_contra_id="usdt-contra",
+                        usdt_frozen_balance_id="usdt-frozen",
+                    )
+            else:
+                raise e
 
         self.stdout.write(f"PlatformAccount ID: {platform.id}")
         self.stdout.write(f"platform.ledger_id: {platform.ledger_id}")
@@ -147,10 +149,15 @@ class Command(BaseCommand):
                 else:
                     ensure_user_wallets(user)
             except Exception as e:
-                # Fallback if Blnk is offline
-                Wallet.objects.get_or_create(user=user, currency="USDT", defaults={"blnk_balance_id": f"usdt-{user.id}"})
-                Wallet.objects.get_or_create(user=user, currency="MWK", defaults={"blnk_balance_id": f"mwk-{user.id}"})
-                self.stdout.write(f"Created offline fallback wallets for {username}: {str(e)}")
+                if is_testing:
+                    Wallet.objects.get_or_create(user=user, currency="USDT", defaults={"blnk_balance_id": f"usdt-{user.id}"})
+                    Wallet.objects.get_or_create(user=user, currency="MWK", defaults={"blnk_balance_id": f"mwk-{user.id}"})
+                    self.stdout.write(f"Created offline fallback wallets for test user {username}: {str(e)}")
+                else:
+                    self.stdout.write(self.style.ERROR(f"Could not provision Blnk wallets for {username}: {str(e)}"))
+                    failed_credits += 1
+                    failures.append(f"{username}: Blnk wallet creation failed: {str(e)}")
+                    continue
 
             # Check existing balance from Blnk
             current_usdt = Decimal("0")
