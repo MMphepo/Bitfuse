@@ -200,6 +200,7 @@ class AuthRegistrationTests(TestCase):
             "phone_number": "0999123456",
             "password": "StrongPassword123!",
             "password_confirmation": "StrongPassword123!",
+            "recaptcha_token": "test-token",
         }
         resp = self.client.post("/api/v1/auth/register/", data, format="json")
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
@@ -222,6 +223,7 @@ class AuthRegistrationTests(TestCase):
             "phone_number": "0999123456",
             "password": "StrongPassword123!",
             "password_confirmation": "StrongPassword123!",
+            "recaptcha_token": "test-token",
         }
         resp = self.client.post("/api/v1/auth/register/", data, format="json")
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
@@ -242,6 +244,7 @@ class AuthRegistrationTests(TestCase):
             "phone_number": "0999222333",
             "password": "StrongPassword123!",
             "password_confirmation": "StrongPassword123!",
+            "recaptcha_token": "test-token",
         }
         resp = self.client.post("/api/v1/auth/register/", data, format="json")
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
@@ -255,6 +258,7 @@ class AuthRegistrationTests(TestCase):
             "phone_number": "0999333444",
             "password": "StrongPassword123!",
             "password_confirmation": "WrongPassword123!",
+            "recaptcha_token": "test-token",
         }
         resp = self.client.post("/api/v1/auth/register/", data, format="json")
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
@@ -269,6 +273,7 @@ class AuthRegistrationTests(TestCase):
             "phone_number": "0999444555",
             "password": "password123",
             "password_confirmation": "password123",
+            "recaptcha_token": "test-token",
         }
         resp = self.client.post("/api/v1/auth/register/", data, format="json")
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
@@ -291,7 +296,7 @@ class AuthLoginAndJWTTests(TestCase):
     def test_login_success(self):
         resp = self.client.post(
             "/api/v1/auth/login/",
-            {"email": "login@example.com", "password": "ValidPassword123!"},
+            {"email": "login@example.com", "password": "ValidPassword123!", "recaptcha_token": "test-token"},
             format="json",
         )
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
@@ -302,7 +307,7 @@ class AuthLoginAndJWTTests(TestCase):
     def test_login_invalid_credentials(self):
         resp = self.client.post(
             "/api/v1/auth/login/",
-            {"email": "login@example.com", "password": "WrongPassword"},
+            {"email": "login@example.com", "password": "WrongPassword", "recaptcha_token": "test-token"},
             format="json",
         )
         self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
@@ -312,7 +317,7 @@ class AuthLoginAndJWTTests(TestCase):
     def test_token_refresh_and_blacklisting(self):
         login_resp = self.client.post(
             "/api/v1/auth/login/",
-            {"email": "login@example.com", "password": "ValidPassword123!"},
+            {"email": "login@example.com", "password": "ValidPassword123!", "recaptcha_token": "test-token"},
             format="json",
         )
         refresh_token = login_resp.data["data"]["tokens"]["refresh"]
@@ -381,13 +386,13 @@ class AuthVerificationTests(TestCase):
 
     def test_resend_verification_generic_response_enumeration_protection(self):
         # Non-existent email returns same generic success message
-        resp = self.client.post("/api/v1/auth/resend-verification/", {"email": "nonexistent@example.com"}, format="json")
+        resp = self.client.post("/api/v1/auth/resend-verification/", {"email": "nonexistent@example.com", "recaptcha_token": "test-token"}, format="json")
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         self.assertTrue(resp.data["success"])
         self.assertIn("verification email will be sent", resp.data["message"])
 
         # Existing unverified email returns same generic success message
-        resp_exist = self.client.post("/api/v1/auth/resend-verification/", {"email": "verif@example.com"}, format="json")
+        resp_exist = self.client.post("/api/v1/auth/resend-verification/", {"email": "verif@example.com", "recaptcha_token": "test-token"}, format="json")
         self.assertEqual(resp_exist.status_code, status.HTTP_200_OK)
         self.assertTrue(resp_exist.data["success"])
         self.assertIn("verification email will be sent", resp_exist.data["message"])
@@ -445,7 +450,7 @@ class PasswordResetTests(TestCase):
         self.assertTrue(self.user.check_password("NewStrongPassword123!"))
 
     def test_unknown_email_generic_response(self):
-        req_resp = self.client.post("/api/v1/auth/password-reset/", {"email": "unknown@example.com"}, format="json")
+        req_resp = self.client.post("/api/v1/auth/password-reset/", {"email": "unknown@example.com", "recaptcha_token": "test-token"}, format="json")
         self.assertEqual(req_resp.status_code, status.HTTP_200_OK)
         self.assertIn("password reset instructions have been sent", req_resp.data["message"])
 
@@ -495,7 +500,7 @@ class SessionAndInactivityTests(TestCase):
     def test_login_creates_usersession(self):
         resp = self.client.post(
             "/api/v1/auth/login/",
-            {"email": "session@example.com", "password": "ValidPassword123!"},
+            {"email": "session@example.com", "password": "ValidPassword123!", "recaptcha_token": "test-token"},
             format="json",
         )
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
@@ -507,7 +512,7 @@ class SessionAndInactivityTests(TestCase):
     def test_active_user_updates_last_activity(self):
         login_resp = self.client.post(
             "/api/v1/auth/login/",
-            {"email": "session@example.com", "password": "ValidPassword123!"},
+            {"email": "session@example.com", "password": "ValidPassword123!", "recaptcha_token": "test-token"},
             format="json",
         )
         access_token = login_resp.data["data"]["tokens"]["access"]
@@ -530,7 +535,7 @@ class SessionAndInactivityTests(TestCase):
     def test_background_polling_does_not_update_last_activity(self):
         login_resp = self.client.post(
             "/api/v1/auth/login/",
-            {"email": "session@example.com", "password": "ValidPassword123!"},
+            {"email": "session@example.com", "password": "ValidPassword123!", "recaptcha_token": "test-token"},
             format="json",
         )
         access_token = login_resp.data["data"]["tokens"]["access"]
@@ -552,7 +557,7 @@ class SessionAndInactivityTests(TestCase):
     def test_session_inactivity_timeout_rejects_api_and_refresh(self):
         login_resp = self.client.post(
             "/api/v1/auth/login/",
-            {"email": "session@example.com", "password": "ValidPassword123!"},
+            {"email": "session@example.com", "password": "ValidPassword123!", "recaptcha_token": "test-token"},
             format="json",
         )
         access_token = login_resp.data["data"]["tokens"]["access"]
@@ -578,7 +583,7 @@ class SessionAndInactivityTests(TestCase):
     def test_session_max_lifetime_rejects_session(self):
         login_resp = self.client.post(
             "/api/v1/auth/login/",
-            {"email": "session@example.com", "password": "ValidPassword123!"},
+            {"email": "session@example.com", "password": "ValidPassword123!", "recaptcha_token": "test-token"},
             format="json",
         )
         access_token = login_resp.data["data"]["tokens"]["access"]
@@ -598,7 +603,7 @@ class SessionAndInactivityTests(TestCase):
         client_a = APIClient()
         resp_a = client_a.post(
             "/api/v1/auth/login/",
-            {"email": "session@example.com", "password": "ValidPassword123!"},
+            {"email": "session@example.com", "password": "ValidPassword123!", "recaptcha_token": "test-token"},
             format="json",
             HTTP_USER_AGENT="DeviceA",
         )
@@ -608,7 +613,7 @@ class SessionAndInactivityTests(TestCase):
         client_b = APIClient()
         resp_b = client_b.post(
             "/api/v1/auth/login/",
-            {"email": "session@example.com", "password": "ValidPassword123!"},
+            {"email": "session@example.com", "password": "ValidPassword123!", "recaptcha_token": "test-token"},
             format="json",
             HTTP_USER_AGENT="DeviceB",
         )

@@ -49,8 +49,15 @@ def custom_exception_handler(exc, context):
     if response is not None:
         if response.status_code == status.HTTP_400_BAD_REQUEST:
             raw_data = response.data
-            if isinstance(raw_data, dict) and "success" in raw_data:
-                return response
+            if isinstance(raw_data, dict):
+                if "detail" in raw_data:
+                    detail_val = raw_data["detail"]
+                    if isinstance(detail_val, list) and len(detail_val) > 0:
+                        detail_val = detail_val[0]
+                    response.data = {"detail": str(detail_val)}
+                    return response
+                if "success" in raw_data:
+                    return response
 
             message = "Please correct the highlighted fields."
             if isinstance(raw_data, dict) and "message" in raw_data and isinstance(raw_data["message"], str):

@@ -63,7 +63,7 @@ class BuyPaymentFlowTests(TestCase):
 
     def create_order(self, usdt="50"):
         response = self.client.post(
-            reverse("order-buy"), {"amount_usdt": usdt, "payment_method": "airtel_money"}, format="json"
+            reverse("order-buy"), {"amount_usdt": usdt, "payment_method": "airtel_money", "recaptcha_token": "test-token"}, format="json"
         )
         self.assertEqual(response.status_code, 201, response.data)
         return Order.objects.get(id=response.data["id"])
