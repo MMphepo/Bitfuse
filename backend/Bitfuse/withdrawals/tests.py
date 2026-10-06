@@ -134,7 +134,8 @@ class WithdrawalSystemTests(TestCase):
         self.client.force_authenticate(self.unverified_user)
         response = self.client.post(reverse("withdrawal-list-create"), {
             "amount": "50.00",
-            "destination_address": "TY4hG6Xz6m93ssVjUr3NZsSXYhxXabc123"
+            "destination_address": "TY4hG6Xz6m93ssVjUr3NZsSXYhxXabc123",
+            "recaptcha_token": "test-token"
         })
         self.assertEqual(response.status_code, 403)
         msg = str(response.data.get("message") or response.data.get("detail") or "")
@@ -176,7 +177,8 @@ class WithdrawalSystemTests(TestCase):
         # Below min
         response = self.client.post(reverse("withdrawal-list-create"), {
             "amount": "15.00",
-            "destination_address": "TY4hG6Xz6m93ssVjUr3NZsSXYhxXabc123"
+            "destination_address": "TY4hG6Xz6m93ssVjUr3NZsSXYhxXabc123",
+            "recaptcha_token": "test-token"
         })
         self.assertEqual(response.status_code, 400)
         self.assertIn("below the minimum", response.data["detail"])
@@ -184,7 +186,8 @@ class WithdrawalSystemTests(TestCase):
         # Above max
         response = self.client.post(reverse("withdrawal-list-create"), {
             "amount": "501.00",
-            "destination_address": "TY4hG6Xz6m93ssVjUr3NZsSXYhxXabc123"
+            "destination_address": "TY4hG6Xz6m93ssVjUr3NZsSXYhxXabc123",
+            "recaptcha_token": "test-token"
         })
         self.assertEqual(response.status_code, 400)
         self.assertIn("exceeds the maximum", response.data["detail"])
@@ -193,7 +196,8 @@ class WithdrawalSystemTests(TestCase):
         # Invalid start char
         response = self.client.post(reverse("withdrawal-list-create"), {
             "amount": "50.00",
-            "destination_address": "AY4hG6Xz6m93ssVjUr3NZsSXYhxXabc123"
+            "destination_address": "AY4hG6Xz6m93ssVjUr3NZsSXYhxXabc123",
+            "recaptcha_token": "test-token"
         })
         self.assertEqual(response.status_code, 400)
         self.assertIn("not a valid TRON address", response.data["detail"])
@@ -201,7 +205,8 @@ class WithdrawalSystemTests(TestCase):
         # Invalid length
         response = self.client.post(reverse("withdrawal-list-create"), {
             "amount": "50.00",
-            "destination_address": "TY4hG6Xz6m93ss"
+            "destination_address": "TY4hG6Xz6m93ss",
+            "recaptcha_token": "test-token"
         })
         self.assertEqual(response.status_code, 400)
 
@@ -209,7 +214,8 @@ class WithdrawalSystemTests(TestCase):
         response = self.client.post(reverse("withdrawal-list-create"), {
             "amount": "50.00",
             "network": "ETHEREUM",
-            "destination_address": "TY4hG6Xz6m93ssVjUr3NZsSXYhxXabc123"
+            "destination_address": "TY4hG6Xz6m93ssVjUr3NZsSXYhxXabc123",
+            "recaptcha_token": "test-token"
         })
         self.assertEqual(response.status_code, 400)
         detail_msg = str(response.data.get("detail") or response.data.get("network") or response.data)
@@ -221,7 +227,8 @@ class WithdrawalSystemTests(TestCase):
         # Alice only has 100 USDT, request 101 USDT
         response = self.client.post(reverse("withdrawal-list-create"), {
             "amount": "101.00",
-            "destination_address": "TY4hG6Xz6m93ssVjUr3NZsSXYhxXabc123"
+            "destination_address": "TY4hG6Xz6m93ssVjUr3NZsSXYhxXabc123",
+            "recaptcha_token": "test-token"
         })
         self.assertEqual(response.status_code, 400)
         self.assertIn("Insufficient USDT balance", response.data["detail"])
@@ -240,7 +247,8 @@ class WithdrawalSystemTests(TestCase):
     def test_successful_withdrawal_flow(self):
         response = self.client.post(reverse("withdrawal-list-create"), {
             "amount": "50.00",
-            "destination_address": "TY4hG6Xz6m93ssVjUr3NZsSXYhxXabc123"
+            "destination_address": "TY4hG6Xz6m93ssVjUr3NZsSXYhxXabc123",
+            "recaptcha_token": "test-token"
         })
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data["status"], "BROADCAST")
@@ -262,7 +270,8 @@ class WithdrawalSystemTests(TestCase):
 
         response = self.client.post(reverse("withdrawal-list-create"), {
             "amount": "50.00",
-            "destination_address": "TY4hG6Xz6m93ssVjUr3NZsSXYhxXabc123"
+            "destination_address": "TY4hG6Xz6m93ssVjUr3NZsSXYhxXabc123",
+            "recaptcha_token": "test-token"
         })
         self.assertEqual(response.status_code, 400)
 
@@ -331,7 +340,8 @@ class WithdrawalSystemTests(TestCase):
         # Creating withdrawal must be rejected
         response = self.client.post(reverse("withdrawal-list-create"), {
             "amount": "50.00",
-            "destination_address": "TY4hG6Xz6m93ssVjUr3NZsSXYhxXabc123"
+            "destination_address": "TY4hG6Xz6m93ssVjUr3NZsSXYhxXabc123",
+            "recaptcha_token": "test-token"
         })
         self.assertEqual(response.status_code, 400)
         self.assertIn("temporarily frozen", response.data["detail"])
@@ -426,7 +436,8 @@ class BscWithdrawalTests(TestCase):
             "asset": "USDT",
             "network": "BSC",
             "amount": "100.00",
-            "destination_address": valid_evm_address
+            "destination_address": valid_evm_address,
+            "recaptcha_token": "test-token"
         })
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data["network"], "BSC")

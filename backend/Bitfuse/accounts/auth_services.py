@@ -390,41 +390,14 @@ class EmailService:
 
 class CaptchaService:
     @staticmethod
-    def verify_captcha(captcha_token: str, remote_ip: str = None) -> bool:
-        if not getattr(settings, "CAPTCHA_ENABLED", False):
-            return True
-
-        if getattr(settings, "TESTING", False):
-            if captcha_token == "invalid-captcha":
-                raise ValidationError({"captcha": ["Invalid CAPTCHA token."]})
-            return True
-
-        if not captcha_token:
-            raise ValidationError({"captcha": ["CAPTCHA verification required."]})
-
-        secret_key = getattr(settings, "CAPTCHA_SECRET_KEY", "")
-        provider = getattr(settings, "CAPTCHA_PROVIDER", "turnstile").lower()
-
-        if provider == "turnstile":
-            url = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
-        else:
-            url = "https://www.google.com/recaptcha/api/siteverify"
-
-        try:
-            data = {"secret": secret_key, "response": captcha_token}
-            if remote_ip:
-                data["remoteip"] = remote_ip
-
-            resp = requests.post(url, data=data, timeout=5)
-            res_json = resp.json()
-            if not res_json.get("success"):
-                raise ValidationError({"captcha": ["CAPTCHA verification failed. Please try again."]})
-            return True
-        except ValidationError:
-            raise
-        except Exception as exc:
-            logger.error("CAPTCHA verification request error: %s", exc)
-            raise ValidationError({"captcha": ["CAPTCHA verification unavailable."]})
+    def verify_captcha(captcha_token: str, remote_ip: str = None, expected_action: str = None, is_financial: bool = False) -> bool:
+        from .recaptcha import verify_recaptcha
+        return verify_recaptcha(
+            token=captcha_token,
+            expected_action=expected_action,
+            is_financial=is_financial,
+            request_ip=remote_ip,
+        )
 
 
 # ==============================================================================

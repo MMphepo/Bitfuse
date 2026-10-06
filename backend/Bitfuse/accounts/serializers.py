@@ -19,7 +19,7 @@ class RegisterSerializer(serializers.ModelSerializer):
     phone_number = serializers.CharField(required=True, max_length=30)
     password = serializers.CharField(write_only=True, required=True)
     password_confirmation = serializers.CharField(write_only=True, required=True)
-    captcha_token = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    recaptcha_token = serializers.CharField(write_only=True, required=False, allow_blank=True)
 
     class Meta:
         model = User
@@ -31,7 +31,7 @@ class RegisterSerializer(serializers.ModelSerializer):
             "phone_number",
             "password",
             "password_confirmation",
-            "captcha_token",
+            "recaptcha_token",
         ]
 
     def validate_first_name(self, value):

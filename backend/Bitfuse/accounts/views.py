@@ -28,6 +28,7 @@ from .auth_services import (
     OTPService,
     normalize_phone_number,
 )
+from .recaptcha import get_client_ip, verify_recaptcha
 from .services import perform_p2p_transfer
 from orders.models import Order
 
@@ -45,8 +46,12 @@ class RegisterView(generics.CreateAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        captcha_token = serializer.validated_data.get("captcha_token", "")
-        CaptchaService.verify_captcha(captcha_token)
+        recaptcha_token = request.data.get("recaptcha_token")
+        verify_recaptcha(
+            recaptcha_token,
+            expected_action="register",
+            request_ip=get_client_ip(request),
+        )
 
         user = serializer.save()
 
@@ -81,6 +86,13 @@ class LoginView(APIView):
     throttle_scope = "auth"
 
     def post(self, request):
+        recaptcha_token = request.data.get("recaptcha_token")
+        verify_recaptcha(
+            recaptcha_token,
+            expected_action="login",
+            request_ip=get_client_ip(request),
+        )
+
         email_or_username = request.data.get("email") or request.data.get("username")
         password = request.data.get("password")
 
@@ -211,6 +223,13 @@ class ResendEmailVerificationView(APIView):
     throttle_scope = "auth"
 
     def post(self, request):
+        recaptcha_token = request.data.get("recaptcha_token")
+        verify_recaptcha(
+            recaptcha_token,
+            expected_action="resend_verification",
+            request_ip=get_client_ip(request),
+        )
+
         email = request.data.get("email")
         user = None
 
@@ -293,13 +312,17 @@ class PasswordResetRequestView(APIView):
     throttle_scope = "auth"
 
     def post(self, request):
-        email = request.data.get("email")
-        captcha_token = request.data.get("captcha_token", "")
+        recaptcha_token = request.data.get("recaptcha_token")
+        verify_recaptcha(
+            recaptcha_token,
+            expected_action="password_reset",
+            request_ip=get_client_ip(request),
+        )
 
+        email = request.data.get("email")
         if not email:
             raise ValidationError({"email": ["Email address is required."]})
 
-        CaptchaService.verify_captcha(captcha_token)
         EmailService.send_password_reset_email(email)
 
         return Response(

@@ -41,6 +41,7 @@ class KYCFlowAndAuthTests(TestCase):
             "id_front": self.id_front,
             "id_back": self.id_back,
             "selfie": self.selfie,
+            "recaptcha_token": "test-token",
         }
         resp = self.client.post("/api/v1/kyc/submit/", data, format="multipart")
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
@@ -69,6 +70,7 @@ class KYCFlowAndAuthTests(TestCase):
             "id_front": self.id_front,
             "id_back": self.id_back,
             "selfie": self.selfie,
+            "recaptcha_token": "test-token",
         }
         resp = self.client.post("/api/v1/kyc/submit/", data, format="multipart")
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
@@ -93,6 +95,7 @@ class KYCFlowAndAuthTests(TestCase):
             "id_front": self.id_front,
             "id_back": self.id_back,
             "selfie": self.selfie,
+            "recaptcha_token": "test-token",
         }
         resp = self.client.post("/api/v1/kyc/submit/", data, format="multipart")
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
@@ -290,7 +293,7 @@ class KYCAdminWorkspaceAPITests(TestCase):
 
         resub_resp = self.client.post(
             "/api/v1/kyc/submit/",
-            {"id_front": id_f, "id_back": id_b, "selfie": selfie},
+            {"id_front": id_f, "id_back": id_b, "selfie": selfie, "recaptcha_token": "test-token"},
             format="multipart",
         )
         self.assertEqual(resub_resp.status_code, status.HTTP_200_OK)

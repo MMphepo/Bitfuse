@@ -7,6 +7,8 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from accounts.recaptcha import get_client_ip, verify_recaptcha
+from Bitfuse.throttling import ConfigurableScopedRateThrottle
 
 from .models import KYCReviewAction, KYCSubmission
 from .serializers import (
@@ -277,14 +279,23 @@ class KYCAdminRequestResubmissionView(APIView):
 class KYCSubmitView(generics.CreateAPIView):
     """
     POST /api/v1/kyc/submit/
-    Accepts multipart form: id_front, id_back, selfie.
+    Accepts multipart form: id_front, id_back, selfie, recaptcha_token.
     Creates a KYCSubmission for the authenticated user.
     """
     serializer_class = KYCUploadSerializer
     parser_classes = [MultiPartParser, FormParser]
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ConfigurableScopedRateThrottle]
+    throttle_scope = "auth"
 
     def create(self, request, *args, **kwargs):
+        recaptcha_token = request.data.get("recaptcha_token")
+        verify_recaptcha(
+            recaptcha_token,
+            expected_action="kyc_submission",
+            request_ip=get_client_ip(request),
+        )
+
         # Debug
         print("=" * 60)
         print("[KYC DEBUG] Request user:", request.user,
