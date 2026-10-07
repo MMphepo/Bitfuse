@@ -460,13 +460,24 @@ class GoogleAuthTests(TestCase):
         cache.clear()
         self.client = APIClient()
 
-    def test_google_auth_new_user(self):
-        resp = self.client.post("/api/v1/auth/google/", {"id_token": "mock-google-token-new"}, format="json")
+    def test_google_auth_new_user_with_credential(self):
+        resp = self.client.post("/api/v1/auth/google/", {"credential": "mock-google-token-new"}, format="json")
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         self.assertTrue(resp.data["success"])
         self.assertIn("tokens", resp.data["data"])
+        self.assertIn("access", resp.data["data"]["tokens"])
+        self.assertIn("refresh", resp.data["data"]["tokens"])
 
-    def test_google_auth_account_linking(self):
+        user_data = resp.data["data"]["user"]
+        self.assertEqual(user_data["email"], "googleuser@example.com")
+        self.assertEqual(user_data["verification_status"], "unverified")
+        self.assertTrue(user_data["email_verified"])
+
+        created_user = User.objects.get(email="googleuser@example.com")
+        self.assertEqual(created_user.google_id, "google-uid-12345")
+        self.assertFalse(created_user.is_trading_eligible)
+
+    def test_google_auth_account_linking_verified_email(self):
         user = User.objects.create_user(
             username="google_link",
             email="googleuser@example.com",
@@ -474,11 +485,77 @@ class GoogleAuthTests(TestCase):
             password="Password123!",
             email_verified=True,
         )
-        resp = self.client.post("/api/v1/auth/google/", {"id_token": "mock-google-token-link"}, format="json")
+        resp = self.client.post("/api/v1/auth/google/", {"credential": "mock-google-token-link"}, format="json")
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
 
         user.refresh_from_db()
         self.assertEqual(user.google_id, "google-uid-12345")
+        self.assertEqual(User.objects.filter(email="googleuser@example.com").count(), 1)
+
+    def test_google_auth_account_linking_blocked_unverified_email(self):
+        User.objects.create_user(
+            username="unverified_existing",
+            email="googleuser@example.com",
+            phone_number="+265999444555",
+            password="Password123!",
+            email_verified=False,
+        )
+        resp = self.client.post("/api/v1/auth/google/", {"credential": "mock-google-token-link"}, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("verify your email first", str(resp.data))
+
+    def test_google_auth_identity_conflict_rejected(self):
+        User.objects.create_user(
+            username="conflict_existing",
+            email="existing_diff_google@example.com",
+            phone_number="+265999444666",
+            password="Password123!",
+            email_verified=True,
+            google_id="different-google-sub-777",
+        )
+        resp = self.client.post("/api/v1/auth/google/", {"credential": "mock-google-token-conflict"}, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("different Google identity", str(resp.data))
+
+    def test_google_auth_conflicting_payload_keys_rejected(self):
+        resp = self.client.post(
+            "/api/v1/auth/google/",
+            {"credential": "mock-google-token-1", "id_token": "mock-google-token-2"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Conflicting", str(resp.data))
+
+    def test_google_auth_invalid_credential(self):
+        resp = self.client.post("/api/v1/auth/google/", {"credential": "mock-google-token-invalid"}, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_google_auth_expired_credential(self):
+        resp = self.client.post("/api/v1/auth/google/", {"credential": "mock-google-token-expired"}, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("expired", str(resp.data).lower())
+
+    def test_google_auth_wrong_audience(self):
+        resp = self.client.post("/api/v1/auth/google/", {"credential": "mock-google-token-wrong-aud"}, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("audience mismatch", str(resp.data).lower())
+
+    def test_google_auth_does_not_bypass_kyc_or_trading_restrictions(self):
+        resp = self.client.post("/api/v1/auth/google/", {"credential": "mock-google-token-new"}, format="json")
+        access_token = resp.data["data"]["tokens"]["access"]
+
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access_token}")
+        send_resp = self.client.post(
+            "/api/v1/auth/wallets/send/",
+            {
+                "recipient_username": "other_user",
+                "amount": "10.00",
+                "currency": "USDT",
+                "idempotency_key": "idemp-google-kyc-test",
+            },
+            format="json",
+        )
+        self.assertEqual(send_resp.status_code, status.HTTP_403_FORBIDDEN)
 
 
 from datetime import timedelta

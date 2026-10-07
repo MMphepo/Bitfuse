@@ -377,57 +377,102 @@ class GoogleAuthView(APIView):
     throttle_scope = "auth"
 
     def post(self, request):
-        id_token_str = request.data.get("id_token")
-        if not id_token_str:
-            raise ValidationError({"id_token": ["Google ID token is required."]})
+        recaptcha_token = request.data.get("recaptcha_token")
+        if recaptcha_token:
+            verify_recaptcha(
+                recaptcha_token,
+                expected_action="google_auth",
+                request_ip=get_client_ip(request),
+            )
 
-        google_payload = GoogleAuthService.verify_google_id_token(id_token_str)
+        credential = request.data.get("credential")
+        id_token_input = request.data.get("id_token")
+
+        if credential and id_token_input and str(credential).strip() != str(id_token_input).strip():
+            raise ValidationError(
+                {"credential": ["Conflicting 'credential' and 'id_token' values provided in request."]}
+            )
+
+        token_to_verify = credential or id_token_input
+        if not token_to_verify or not str(token_to_verify).strip():
+            raise ValidationError({"credential": ["Google credential is required."]})
+
+        google_payload = GoogleAuthService.verify_google_id_token(token_to_verify)
         google_sub = google_payload.get("sub")
         google_email = google_payload.get("email", "").lower().strip()
         google_email_verified = google_payload.get("email_verified", False)
         given_name = google_payload.get("given_name", "Google")
         family_name = google_payload.get("family_name", "User")
 
-        if not google_email:
-            raise ValidationError({"id_token": ["Google token does not contain a valid email."]})
+        if not google_sub:
+            raise ValidationError({"credential": ["Google credential did not return a valid sub identifier."]})
 
-        # 1. Search existing user by google_id
-        user = User.objects.filter(google_id=google_sub).first()
+        if not google_email:
+            raise ValidationError({"credential": ["Google token does not contain a valid email."]})
+
+        from django.db import transaction, IntegrityError
+
+        user = None
+
+        with transaction.atomic():
+            # 1. Search existing user by google_id (with lock)
+            user = User.objects.select_for_update().filter(google_id=google_sub).first()
+
+            if not user:
+                # 2. Search existing user by email (with lock)
+                existing_user = User.objects.select_for_update().filter(email__iexact=google_email).first()
+
+                if existing_user:
+                    # Security rule: Check if existing account already has a different google_id
+                    if existing_user.google_id and existing_user.google_id != google_sub:
+                        raise ValidationError(
+                            {"detail": "An existing account with this email is linked to a different Google identity."}
+                        )
+
+                    # Account linking requirement
+                    if existing_user.email_verified and google_email_verified:
+                        existing_user.google_id = google_sub
+                        existing_user.save(update_fields=["google_id"])
+                        user = existing_user
+                    else:
+                        raise ValidationError(
+                            {
+                                "detail": "An account with this email exists. Please verify your email first before linking Google Sign-In."
+                            }
+                        )
+                else:
+                    # 3. Create new user safely handling concurrency
+                    import uuid, re
+                    base_username = re.sub(r"[^\w]", "_", google_email.split("@")[0]).lower()[:20] or "google_user"
+                    username = base_username
+                    while User.objects.filter(username=username).exists():
+                        username = f"{base_username}_{uuid.uuid4().hex[:6]}"
+
+                    try:
+                        user = User.objects.create_user(
+                            username=username,
+                            email=google_email,
+                            first_name=given_name,
+                            last_name=family_name,
+                            google_id=google_sub,
+                            email_verified=google_email_verified,
+                            phone_verified=False,
+                            verification_status="unverified",
+                        )
+                    except IntegrityError:
+                        # Concurrency fallback: re-fetch user if created concurrently
+                        user = User.objects.filter(google_id=google_sub).first()
+                        if not user:
+                            user = User.objects.filter(email__iexact=google_email).first()
 
         if not user:
-            # 2. Search existing user by email
-            existing_user = User.objects.filter(email__iexact=google_email).first()
-            if existing_user:
-                if existing_user.email_verified and google_email_verified:
-                    existing_user.google_id = google_sub
-                    existing_user.save(update_fields=["google_id"])
-                    user = existing_user
-                else:
-                    raise ValidationError(
-                        {
-                            "email": [
-                                "An account with this email exists. Please verify your email first before linking Google Sign-In."
-                            ]
-                        }
-                    )
-            else:
-                # 3. Create new user
-                import uuid, re
-                base_username = re.sub(r"[^\w]", "_", google_email.split("@")[0]).lower()[:20] or "google_user"
-                username = base_username
-                while User.objects.filter(username=username).exists():
-                    username = f"{base_username}_{uuid.uuid4().hex[:6]}"
+            raise ValidationError({"detail": "Google sign-in could not be completed. Please try again."})
 
-                user = User.objects.create_user(
-                    username=username,
-                    email=google_email,
-                    first_name=given_name,
-                    last_name=family_name,
-                    google_id=google_sub,
-                    email_verified=google_email_verified,
-                    phone_verified=False,
-                    verification_status="unverified",
-                )
+        if not user.is_active:
+            return Response(
+                {"success": False, "message": "Account is disabled. Please contact support."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
 
         session, refresh = create_user_session(user, request)
 
