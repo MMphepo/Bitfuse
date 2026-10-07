@@ -308,5 +308,5 @@ if not DEBUG and not TESTING:
         raise ImproperlyConfigured("RECAPTCHA_SECRET_KEY must be set in production when RECAPTCHA_ENABLED=True.")
 
 # Google OAuth Configuration
-GOOGLE_CLIENT_ID = config("GOOGLE_CLIENT_ID", default="")
+GOOGLE_CLIENT_ID = config("GOOGLE_CLIENT_ID", default="50963774471-dnqglh5mpe7s0bh6r3li3tdr1o31fibf.apps.googleusercontent.com")
 GOOGLE_CLIENT_SECRET = config("GOOGLE_CLIENT_SECRET", default="")
