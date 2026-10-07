@@ -407,12 +407,34 @@ class CaptchaService:
 class GoogleAuthService:
     @staticmethod
     def verify_google_id_token(id_token_str: str) -> dict:
-        if not id_token_str:
-            raise ValidationError({"id_token": ["Google ID token is required."]})
+        if not id_token_str or not str(id_token_str).strip():
+            raise ValidationError({"credential": ["Google credential is required."]})
+
+        id_token_str = str(id_token_str).strip()
 
         if getattr(settings, "TESTING", False) and id_token_str.startswith("mock-google-token"):
             if id_token_str == "mock-google-token-invalid":
-                raise ValidationError({"id_token": ["Invalid Google ID token."]})
+                raise ValidationError({"credential": ["Invalid Google credential."]})
+            if id_token_str == "mock-google-token-expired":
+                raise ValidationError({"credential": ["Google authentication has expired. Please try again."]})
+            if id_token_str == "mock-google-token-wrong-aud":
+                raise ValidationError({"credential": ["Google authentication token audience mismatch."]})
+            if id_token_str == "mock-google-token-unverified-email":
+                return {
+                    "sub": "google-uid-unverified-email",
+                    "email": "unverified_google@example.com",
+                    "given_name": "Google",
+                    "family_name": "User",
+                    "email_verified": False,
+                }
+            if id_token_str == "mock-google-token-conflict":
+                return {
+                    "sub": "google-uid-conflict-999",
+                    "email": "existing_diff_google@example.com",
+                    "given_name": "Google",
+                    "family_name": "User",
+                    "email_verified": True,
+                }
             return {
                 "sub": "google-uid-12345",
                 "email": "googleuser@example.com",
@@ -431,11 +453,19 @@ class GoogleAuthService:
             )
 
             if id_info.get("iss") not in ["accounts.google.com", "https://accounts.google.com"]:
-                raise ValidationError({"id_token": ["Invalid Google ID token issuer."]})
+                raise ValidationError({"credential": ["Invalid Google ID token issuer."]})
 
             return id_info
         except ValidationError:
             raise
+        except ValueError as exc:
+            err_msg = str(exc)
+            logger.warning("Google ID token verification failed (ValueError): %s", err_msg)
+            if "expired" in err_msg.lower():
+                raise ValidationError({"credential": ["Google authentication has expired. Please try again."]})
+            if "audience" in err_msg.lower() or "recipient" in err_msg.lower():
+                raise ValidationError({"credential": ["Google authentication token audience mismatch."]})
+            raise ValidationError({"credential": ["Google authentication could not be verified."]})
         except Exception as exc:
             logger.error("Google ID token verification failed: %s", exc)
-            raise ValidationError({"id_token": ["Google authentication failed. Invalid token."]})
+            raise ValidationError({"credential": ["Google sign-in could not be completed."]})
