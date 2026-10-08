@@ -286,7 +286,7 @@ SMS_API_SECRET = config("SMS_API_SECRET", default="")
 SMS_SENDER_ID = config("SMS_SENDER_ID", default="Bitfuse")
 
 # reCAPTCHA Configuration
-RECAPTCHA_ENABLED = config("RECAPTCHA_ENABLED", default=True, cast=bool)
+RECAPTCHA_ENABLED = config("RECAPTCHA_ENABLED", default=False, cast=bool)
 RECAPTCHA_SECRET_KEY = config("RECAPTCHA_SECRET_KEY", default="")
 RECAPTCHA_SCORE_THRESHOLD = config("RECAPTCHA_SCORE_THRESHOLD", default=0.5, cast=float)
 RECAPTCHA_SCORE_THRESHOLD_FINANCIAL = config("RECAPTCHA_SCORE_THRESHOLD_FINANCIAL", default=0.7, cast=float)
