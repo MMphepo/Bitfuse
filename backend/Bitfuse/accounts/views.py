@@ -263,21 +263,39 @@ class RequestOTPView(APIView):
     throttle_scope = "auth"
 
     def post(self, request):
+        user = request.user if request.user and request.user.is_authenticated else None
         phone_number = request.data.get("phone_number")
+
+        if not phone_number and user and user.phone_number:
+            phone_number = user.phone_number
+
         if not phone_number:
             raise ValidationError({"phone_number": ["Phone number is required."]})
 
-        user = request.user if request.user.is_authenticated else None
-        code = OTPService.generate_otp(phone_number=phone_number, user=user)
+        # If user is logged in and already verified on this phone number, short-circuit
+        if user and user.phone_verified and user.phone_number == normalize_phone_number(phone_number):
+            return Response(
+                {
+                    "success": True,
+                    "message": "Phone number is already verified.",
+                    "phone_verified": True,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        otp_result = OTPService.generate_otp(phone_number=phone_number, user=user)
 
         resp_data = {
             "success": True,
-            "message": "Verification code sent via SMS.",
+            "message": "Verification code sent.",
+            "expires_in": otp_result["expires_in"],
+            "resend_after": otp_result["resend_after"],
         }
-        # In testing / dev, surface test code in debug context
+
+        # Surface dev code in test/console mode
         from django.conf import settings
-        if getattr(settings, "TESTING", False) or settings.DEBUG:
-            resp_data["dev_code"] = code
+        if getattr(settings, "TESTING", False) or getattr(settings, "SMS_PROVIDER", "tumasend").lower() == "console":
+            resp_data["dev_code"] = otp_result["code"]
 
         return Response(resp_data, status=status.HTTP_200_OK)
 
@@ -286,22 +304,21 @@ class VerifyOTPView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
+        user = request.user if request.user and request.user.is_authenticated else None
         phone_number = request.data.get("phone_number")
-        code = request.data.get("code")
+        code = request.data.get("code") or request.data.get("otp")
 
-        if not phone_number or not code:
-            raise ValidationError(
-                {
-                    "phone_number": ["Phone number is required."] if not phone_number else [],
-                    "code": ["Verification code is required."] if not code else [],
-                }
-            )
+        if not code:
+            raise ValidationError({"code": ["Verification code is required."]})
 
-        user = request.user if request.user.is_authenticated else None
         OTPService.verify_otp(phone_number=phone_number, code=code, user=user)
 
         return Response(
-            {"success": True, "message": "Phone number verified successfully."},
+            {
+                "success": True,
+                "message": "Mobile number verified successfully.",
+                "phone_verified": True,
+            },
             status=status.HTTP_200_OK,
         )
 

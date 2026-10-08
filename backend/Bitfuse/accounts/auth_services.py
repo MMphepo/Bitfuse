@@ -62,18 +62,37 @@ def normalize_phone_number(phone_str: str) -> str:
 # ==============================================================================
 
 class SMSService:
-    @staticmethod
-    def send_sms(phone_number: str, message: str) -> bool:
-        provider = getattr(settings, "SMS_PROVIDER", "console").lower()
+    @classmethod
+    def send_sms(cls, phone_number: str, message: str) -> tuple[bool, str]:
+        """Dispatches an SMS using configured SMS provider.
 
-        if provider == "console" or settings.DEBUG or getattr(settings, "TESTING", False):
-            logger.info("[SMS CONSOLE] To: %s | Message: %s", phone_number, message)
-            print(f"[SMS CONSOLE] To: {phone_number} | Message: {message}")
-            return True
+        Returns:
+            tuple[bool, str]: (success_flag, provider_batch_id)
+        """
+        provider = getattr(settings, "SMS_PROVIDER", "tumasend").lower()
+        normalized_phone = normalize_phone_number(phone_number)
+
+        if provider == "console" or (getattr(settings, "TESTING", False) and not getattr(settings, "TEST_REAL_TUMASEND", False)):
+            import uuid
+            batch_id = f"dev-batch-{uuid.uuid4()}"
+            masked_phone = f"{normalized_phone[:6]}***{normalized_phone[-3:]}"
+            logger.info("[SMS CONSOLE] To: %s | Batch ID: %s | Message: %s", masked_phone, batch_id, message)
+            print(f"[SMS CONSOLE] To: {masked_phone} | Batch ID: {batch_id} | Message: {message}")
+            return True, batch_id
+
+        if provider == "tumasend":
+            try:
+                from .services.tumasend import TumaSendClient
+                client = TumaSendClient()
+                res = client.send_sms(recipients=[normalized_phone], message=message)
+                batch_id = res.get("batch_id", "")
+                return True, batch_id
+            except Exception as exc:
+                logger.error("TumaSend SMS delivery failed: %s", exc)
+                return False, ""
 
         if provider == "africas_talking":
             try:
-                # Africa's Talking integration placeholder / API call
                 api_key = settings.SMS_API_KEY
                 username = settings.SMS_API_SECRET or "sandbox"
                 url = "https://api.africastalking.com/version1/messaging"
@@ -84,16 +103,16 @@ class SMSService:
                 }
                 data = {
                     "username": username,
-                    "to": phone_number,
+                    "to": normalized_phone,
                     "message": message,
                     "from": getattr(settings, "SMS_SENDER_ID", "Bitfuse"),
                 }
                 resp = requests.post(url, headers=headers, data=data, timeout=10)
                 resp.raise_for_status()
-                return True
+                return True, "africastalking-ok"
             except Exception as exc:
                 logger.error("Africa's Talking SMS failed: %s", exc)
-                return False
+                return False, ""
 
         if provider == "twilio":
             try:
@@ -104,21 +123,20 @@ class SMSService:
                     url,
                     auth=(account_sid, auth_token),
                     data={
-                        "To": phone_number,
+                        "To": normalized_phone,
                         "From": getattr(settings, "SMS_SENDER_ID", "Bitfuse"),
                         "Body": message,
                     },
                     timeout=10,
                 )
                 resp.raise_for_status()
-                return True
+                return True, "twilio-ok"
             except Exception as exc:
                 logger.error("Twilio SMS failed: %s", exc)
-                return False
+                return False, ""
 
         logger.warning("Unknown SMS_PROVIDER '%s'. Message printed to log.", provider)
-        logger.info("[SMS FALLBACK] To: %s | Message: %s", phone_number, message)
-        return True
+        return False, ""
 
 
 class OTPService:
@@ -127,81 +145,176 @@ class OTPService:
         return hashlib.sha256(code.encode("utf-8")).hexdigest()
 
     @classmethod
-    def generate_otp(cls, phone_number: str, user=None, purpose="phone_verification") -> str:
+    def generate_otp(cls, phone_number: str, user=None, purpose="phone_verification") -> dict:
         normalized_phone = normalize_phone_number(phone_number)
+        now = timezone.now()
 
-        # Rate limit check: max 5 requests per hour per phone
-        one_hour_ago = timezone.now() - timedelta(hours=1)
-        recent_count = PhoneOTP.objects.filter(
+        # Enforce rate limits
+        cooldown_seconds = getattr(settings, "PHONE_VERIFICATION_RESEND_COOLDOWN_SECONDS", 60)
+        max_hourly_sends = getattr(settings, "PHONE_VERIFICATION_MAX_SENDS_PER_HOUR", 5)
+        max_daily_sends = getattr(settings, "PHONE_VERIFICATION_MAX_SENDS_PER_DAY", 10)
+
+        one_hour_ago = now - timedelta(hours=1)
+        one_day_ago = now - timedelta(days=1)
+
+        # 1. Check 60-second cooldown
+        latest_otp = PhoneOTP.objects.filter(
+            phone_number=normalized_phone,
+            purpose=purpose,
+        ).order_by("-last_sent_at").first()
+
+        if latest_otp and latest_otp.last_sent_at:
+            seconds_since_last = (now - latest_otp.last_sent_at).total_seconds()
+            if seconds_since_last < cooldown_seconds:
+                remaining_cooldown = int(cooldown_seconds - seconds_since_last)
+                raise ValidationError({
+                    "non_field_errors": ["Please wait before requesting another code."],
+                    "resend_after": remaining_cooldown
+                })
+
+        # 2. Check per-phone hourly limit
+        phone_hourly_count = PhoneOTP.objects.filter(
             phone_number=normalized_phone,
             purpose=purpose,
             created_at__gte=one_hour_ago,
         ).count()
-        if recent_count >= 5:
-            raise ValidationError({"non_field_errors": ["Too many OTP requests. Please wait before requesting another code."]})
+        if phone_hourly_count >= max_hourly_sends:
+            raise ValidationError({"detail": "Too many verification requests for this phone number. Please try again later."})
 
-        # Invalidate previous unused OTPs for this phone/purpose
+        # 3. Check per-user limits (hourly and daily)
+        if user:
+            user_hourly_count = PhoneOTP.objects.filter(
+                user=user,
+                purpose=purpose,
+                created_at__gte=one_hour_ago,
+            ).count()
+            if user_hourly_count >= max_hourly_sends:
+                raise ValidationError({"detail": "Too many verification requests. Please wait an hour before trying again."})
+
+            user_daily_count = PhoneOTP.objects.filter(
+                user=user,
+                purpose=purpose,
+                created_at__gte=one_day_ago,
+            ).count()
+            if user_daily_count >= max_daily_sends:
+                raise ValidationError({"detail": "Maximum daily verification limit reached. Please try again tomorrow."})
+
+        # Mark previous pending OTPs for this phone/purpose as superseded
         PhoneOTP.objects.filter(
             phone_number=normalized_phone,
             purpose=purpose,
-            used=False,
-        ).update(used=True)
+            status="pending",
+        ).update(status="superseded", used=True)
 
         # Generate cryptographically secure 6-digit OTP
         code = f"{secrets.SystemRandom().randint(100000, 999999)}"
         otp_hash = cls._hash_otp(code)
-        expires_at = timezone.now() + timedelta(minutes=10)
+        expiry_seconds = getattr(settings, "PHONE_VERIFICATION_OTP_EXPIRY_SECONDS", 300)
+        expires_at = now + timedelta(seconds=expiry_seconds)
 
-        PhoneOTP.objects.create(
+        # Send SMS via SMSService (TumaSendClient)
+        message = f"Your BitFuse verification code is {code}. It expires in {int(expiry_seconds // 60)} minutes."
+        success, batch_id = SMSService.send_sms(normalized_phone, message)
+
+        if not success:
+            logger.error("[OTP_SEND_FAILED] Failed to dispatch SMS to %s via provider.", normalized_phone)
+            raise ValidationError({"detail": "Failed to send verification SMS. Please try again shortly."})
+
+        otp_record = PhoneOTP.objects.create(
             user=user,
             phone_number=normalized_phone,
             otp_hash=otp_hash,
             expires_at=expires_at,
             purpose=purpose,
+            status="pending",
+            provider_batch_id=batch_id,
+            last_sent_at=now,
         )
 
-        message = f"Your Bitfuse verification code is {code}. Valid for 10 minutes. Do not share this code."
-        SMSService.send_sms(normalized_phone, message)
-        return code
+        return {
+            "code": code,
+            "expires_in": expiry_seconds,
+            "resend_after": cooldown_seconds,
+            "batch_id": batch_id,
+        }
 
     @classmethod
-    def verify_otp(cls, phone_number: str, code: str, user=None, purpose="phone_verification") -> bool:
-        normalized_phone = normalize_phone_number(phone_number)
+    def verify_otp(cls, phone_number: str = None, code: str = None, user=None, purpose="phone_verification") -> bool:
+        if not code or not str(code).strip():
+            raise ValidationError({"code": ["Verification code is required."]})
+
+        clean_code = str(code).strip()
+        if not clean_code.isdigit() or len(clean_code) != 6:
+            raise ValidationError({"code": ["Verification code must be a 6-digit number."]})
+
         now = timezone.now()
 
-        otp_record = PhoneOTP.objects.filter(
-            phone_number=normalized_phone,
+        # Build query matching user or phone
+        query = PhoneOTP.objects.filter(
             purpose=purpose,
             used=False,
-            expires_at__gt=now,
-        ).order_by("-created_at").first()
+        )
+        if user:
+            query = query.filter(user=user)
+        elif phone_number:
+            normalized_phone = normalize_phone_number(phone_number)
+            query = query.filter(phone_number=normalized_phone)
+        else:
+            raise ValidationError({"detail": "User or phone number is required for OTP verification."})
 
-        if not otp_record:
+        otp_record = query.order_by("-created_at").first()
+
+        if not otp_record or otp_record.status in ("expired", "failed", "superseded"):
             raise ValidationError({"code": ["Invalid or expired verification code."]})
 
-        if otp_record.attempts >= 5:
+        # Expiration check
+        if now > otp_record.expires_at:
+            otp_record.status = "expired"
             otp_record.used = True
-            otp_record.save(update_fields=["used"])
-            raise ValidationError({"code": ["Maximum verification attempts exceeded. Please request a new code."]})
+            otp_record.save(update_fields=["status", "used"])
+            raise ValidationError({"code": ["Invalid or expired verification code."]})
 
-        otp_record.attempts += 1
-        otp_record.save(update_fields=["attempts"])
+        # Attempt limit check
+        max_attempts = getattr(settings, "PHONE_VERIFICATION_MAX_ATTEMPTS", 5)
+        if otp_record.attempts >= max_attempts:
+            otp_record.status = "failed"
+            otp_record.used = True
+            otp_record.save(update_fields=["status", "used"])
+            raise ValidationError({"detail": "Maximum verification attempts exceeded. Please request a new code."})
 
-        incoming_hash = cls._hash_otp(code.strip())
+        # Check hash comparison
+        incoming_hash = cls._hash_otp(clean_code)
         if not hmac.compare_digest(otp_record.otp_hash, incoming_hash):
-            raise ValidationError({"code": ["Invalid verification code."]})
+            otp_record.attempts += 1
+            if otp_record.attempts >= max_attempts:
+                otp_record.status = "failed"
+                otp_record.used = True
+                otp_record.save(update_fields=["attempts", "status", "used"])
+                raise ValidationError({"detail": "Maximum verification attempts exceeded. Please request a new code."})
+            else:
+                otp_record.save(update_fields=["attempts"])
+                raise ValidationError({"code": ["Invalid verification code."]})
 
-        # Success
-        otp_record.used = True
-        otp_record.save(update_fields=["used"])
+        # OTP verification successful - execute user and OTP status update inside atomic transaction
+        from django.db import transaction
 
-        if user:
-            user.phone_verified = True
-            user.save(update_fields=["phone_verified"])
-        else:
-            matching_users = User.objects.filter(phone_number=normalized_phone)
-            matching_users.update(phone_verified=True)
+        with transaction.atomic():
+            otp_record.status = "verified"
+            otp_record.used = True
+            otp_record.verified_at = now
+            otp_record.save(update_fields=["status", "used", "verified_at"])
 
+            target_user = user or otp_record.user
+            if target_user:
+                target_user.phone_number = otp_record.phone_number
+                target_user.phone_verified = True
+                target_user.phone_verified_at = now
+                target_user.save(update_fields=["phone_number", "phone_verified", "phone_verified_at"])
+            else:
+                matching_users = User.objects.filter(phone_number=otp_record.phone_number)
+                matching_users.update(phone_verified=True, phone_verified_at=now)
+
+        logger.info(f"[OTP_VERIFIED] Phone number {otp_record.phone_number} successfully verified.")
         return True
 
 

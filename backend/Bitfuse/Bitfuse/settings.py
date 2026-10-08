@@ -280,10 +280,20 @@ EMAIL_VERIFICATION_RESEND_SECONDS = config("EMAIL_VERIFICATION_RESEND_SECONDS", 
 EMAIL_VERIFICATION_MAX_REQUESTS_PER_HOUR = config("EMAIL_VERIFICATION_MAX_REQUESTS_PER_HOUR", default=5, cast=int)
 
 # SMS & OTP Configuration
-SMS_PROVIDER = config("SMS_PROVIDER", default="console")  # Options: console, africas_talking, twilio
+SMS_PROVIDER = config("SMS_PROVIDER", default="tumasend")  # Options: tumasend, console, africas_talking, twilio
 SMS_API_KEY = config("SMS_API_KEY", default="")
 SMS_API_SECRET = config("SMS_API_SECRET", default="")
 SMS_SENDER_ID = config("SMS_SENDER_ID", default="Bitfuse")
+
+# TumaSend Configuration
+TUMASEND_API_URL = config("TUMASEND_API_URL", default="https://gateway.tumasend.com")
+TUMASEND_API_KEY = config("TUMASEND_API_KEY", default="")
+TUMASEND_SENDER_ID = config("TUMASEND_SENDER_ID", default="Bitfuse")
+PHONE_VERIFICATION_OTP_EXPIRY_SECONDS = config("PHONE_VERIFICATION_OTP_EXPIRY_SECONDS", default=300, cast=int)
+PHONE_VERIFICATION_MAX_ATTEMPTS = config("PHONE_VERIFICATION_MAX_ATTEMPTS", default=5, cast=int)
+PHONE_VERIFICATION_RESEND_COOLDOWN_SECONDS = config("PHONE_VERIFICATION_RESEND_COOLDOWN_SECONDS", default=60, cast=int)
+PHONE_VERIFICATION_MAX_SENDS_PER_HOUR = config("PHONE_VERIFICATION_MAX_SENDS_PER_HOUR", default=5, cast=int)
+PHONE_VERIFICATION_MAX_SENDS_PER_DAY = config("PHONE_VERIFICATION_MAX_SENDS_PER_DAY", default=10, cast=int)
 
 # reCAPTCHA Configuration
 RECAPTCHA_ENABLED = config("RECAPTCHA_ENABLED", default=False, cast=bool)
