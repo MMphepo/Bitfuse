@@ -293,10 +293,7 @@ RECAPTCHA_SCORE_THRESHOLD_FINANCIAL = config("RECAPTCHA_SCORE_THRESHOLD_FINANCIA
 _recaptcha_hostnames_raw = config("RECAPTCHA_ALLOWED_HOSTNAMES", default="bitfuse.mw,www.bitfuse.mw")
 RECAPTCHA_ALLOWED_HOSTNAMES = [h.strip() for h in _recaptcha_hostnames_raw.split(",") if h.strip()]
 
-# CAPTCHA Configuration (backwards compatibility)
-CAPTCHA_ENABLED = RECAPTCHA_ENABLED
-CAPTCHA_PROVIDER = "recaptcha"
-CAPTCHA_SECRET_KEY = RECAPTCHA_SECRET_KEY
+
 
 # Production reCAPTCHA configuration safety check
 if not DEBUG and not TESTING:
