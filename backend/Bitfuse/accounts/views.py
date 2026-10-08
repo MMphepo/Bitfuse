@@ -455,6 +455,7 @@ class GoogleAuthView(APIView):
                             first_name=given_name,
                             last_name=family_name,
                             google_id=google_sub,
+                            phone_number=None,
                             email_verified=google_email_verified,
                             phone_verified=False,
                             verification_status="unverified",
