@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+from django.utils import timezone
 
 
 class User(AbstractUser):
@@ -14,6 +15,7 @@ class User(AbstractUser):
 
     email_verified = models.BooleanField(default=False)
     phone_verified = models.BooleanField(default=False)
+    phone_verified_at = models.DateTimeField(null=True, blank=True)
 
     VERIFICATION_CHOICES = [
         ("unverified", "Unverified"),
@@ -218,13 +220,26 @@ class PasswordResetToken(models.Model):
 
 
 class PhoneOTP(models.Model):
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("verified", "Verified"),
+        ("expired", "Expired"),
+        ("failed", "Failed"),
+        ("superseded", "Superseded"),
+    ]
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="phone_otps", null=True, blank=True)
     phone_number = models.CharField(max_length=30, db_index=True)
     otp_hash = models.CharField(max_length=128)
     attempts = models.IntegerField(default=0)
+    send_count = models.IntegerField(default=1)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending", db_index=True)
+    provider_batch_id = models.CharField(max_length=100, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
+    last_sent_at = models.DateTimeField(default=timezone.now)
     expires_at = models.DateTimeField()
+    verified_at = models.DateTimeField(null=True, blank=True)
     used = models.BooleanField(default=False)
     purpose = models.CharField(max_length=30, default="phone_verification")
 
@@ -232,7 +247,7 @@ class PhoneOTP(models.Model):
         ordering = ["-created_at"]
 
     def __str__(self):
-        return f"OTP for {self.phone_number} (used={self.used})"
+        return f"OTP for {self.phone_number} (status={self.status})"
 
 
 class UserSession(models.Model):

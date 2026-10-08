@@ -417,6 +417,57 @@ class AuthVerificationTests(TestCase):
 
         self.user.refresh_from_db()
         self.assertTrue(self.user.phone_verified)
+        self.assertIsNotNone(self.user.phone_verified_at)
+
+    @mock.patch("accounts.services.tumasend.requests.post")
+    def test_tumasend_client_and_otp_lifecycle(self, mock_post):
+        mock_resp = mock.MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "batch_id": "batch-tumasend-test-123",
+            "success": True,
+            "queued": 1,
+        }
+        mock_resp.raise_for_status.return_value = None
+        mock_post.return_value = mock_resp
+
+        self.client.force_authenticate(user=self.user)
+
+        with override_settings(SMS_PROVIDER="tumasend", TEST_REAL_TUMASEND=True, TUMASEND_API_KEY="ts_test_key_123"):
+            req_resp = self.client.post("/api/v1/auth/otp/request/", {"phone_number": "0991112233"}, format="json")
+            self.assertEqual(req_resp.status_code, status.HTTP_200_OK)
+            self.assertIn("expires_in", req_resp.data)
+            self.assertIn("resend_after", req_resp.data)
+
+            # Confirm TumaSend API call parameters
+            mock_post.assert_called_once()
+            args, kwargs = mock_post.call_args
+            self.assertEqual(kwargs["headers"]["x-api-key"], "ts_test_key_123")
+            self.assertEqual(kwargs["json"]["recipients"], ["+265991112233"])
+
+            # Verify cooldown enforcement
+            cooldown_resp = self.client.post("/api/v1/auth/otp/request/", {"phone_number": "0991112233"}, format="json")
+            self.assertEqual(cooldown_resp.status_code, status.HTTP_400_BAD_REQUEST)
+            self.assertIn("resend_after", str(cooldown_resp.data))
+
+    def test_otp_attempt_limits_and_expiry(self):
+        self.client.force_authenticate(user=self.user)
+        req_resp = self.client.post("/api/v1/auth/otp/request/", {"phone_number": "0881234567"}, format="json")
+        dev_code = req_resp.data.get("dev_code")
+
+        # 4 wrong attempts
+        for _ in range(4):
+            fail_resp = self.client.post("/api/v1/auth/otp/verify/", {"phone_number": "0881234567", "code": "000000"}, format="json")
+            self.assertEqual(fail_resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+        # 5th wrong attempt reaches max attempts (attempts=5) and fails with lockout message
+        fifth_resp = self.client.post("/api/v1/auth/otp/verify/", {"phone_number": "0881234567", "code": "000000"}, format="json")
+        self.assertEqual(fifth_resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Maximum verification attempts exceeded", str(fifth_resp.data))
+
+        # Even correct code is rejected after max attempts
+        ver_resp = self.client.post("/api/v1/auth/otp/verify/", {"phone_number": "0881234567", "code": dev_code}, format="json")
+        self.assertEqual(ver_resp.status_code, status.HTTP_400_BAD_REQUEST)
 
 
 class PasswordResetTests(TestCase):
