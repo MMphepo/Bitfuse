@@ -557,6 +557,52 @@ class GoogleAuthTests(TestCase):
         )
         self.assertEqual(send_resp.status_code, status.HTTP_403_FORBIDDEN)
 
+    def test_multiple_users_with_null_phone_number(self):
+        # User 1 with phone_number=None
+        user1 = User.objects.create_user(
+            username="null_phone_1",
+            email="null1@example.com",
+            phone_number=None,
+            password="Password123!",
+        )
+        self.assertIsNone(user1.phone_number)
+
+        # User 2 with phone_number=None
+        user2 = User.objects.create_user(
+            username="null_phone_2",
+            email="null2@example.com",
+            phone_number=None,
+            password="Password123!",
+        )
+        self.assertIsNone(user2.phone_number)
+
+        # Create two Google users sequentially with no phone number
+        resp1 = self.client.post("/api/v1/auth/google/", {"credential": "mock-google-token-new"}, format="json")
+        self.assertEqual(resp1.status_code, status.HTTP_200_OK)
+        guser1 = User.objects.get(email="googleuser@example.com")
+        self.assertIsNone(guser1.phone_number)
+
+        resp2 = self.client.post("/api/v1/auth/google/", {"credential": "mock-google-token-conflict"}, format="json")
+        self.assertEqual(resp2.status_code, status.HTTP_200_OK)
+        guser2 = User.objects.get(email="existing_diff_google@example.com")
+        self.assertIsNone(guser2.phone_number)
+
+    def test_real_phone_number_uniqueness_enforced(self):
+        User.objects.create_user(
+            username="real_phone_user",
+            email="realphone@example.com",
+            phone_number="+265999000999",
+            password="Password123!",
+        )
+
+        with self.assertRaises(Exception):
+            User.objects.create_user(
+                username="duplicate_phone_user",
+                email="dup_realphone@example.com",
+                phone_number="+265999000999",
+                password="Password123!",
+            )
+
 
 from datetime import timedelta
 from django.utils import timezone
