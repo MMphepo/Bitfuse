@@ -82,7 +82,7 @@ class SMSService:
 
         if provider == "tumasend":
             try:
-                from .services.tumasend import TumaSendClient
+                from .tumasend import TumaSendClient
                 client = TumaSendClient()
                 res = client.send_sms(recipients=[normalized_phone], message=message)
                 batch_id = res.get("batch_id", "")
@@ -306,13 +306,24 @@ class OTPService:
 
             target_user = user or otp_record.user
             if target_user:
-                target_user.phone_number = otp_record.phone_number
-                target_user.phone_verified = True
-                target_user.phone_verified_at = now
-                target_user.save(update_fields=["phone_number", "phone_verified", "phone_verified_at"])
+                # Lock row if user instance is present in database
+                User.objects.filter(id=target_user.id).update(
+                    phone_number=otp_record.phone_number,
+                    phone_verified=True,
+                    phone_verified_at=now,
+                )
+                target_user.refresh_from_db()
+                logger.info(
+                    "[OTP_USER_PERSISTED] User %s (id=%s) phone_verified set to %s at %s",
+                    target_user.username,
+                    target_user.id,
+                    target_user.phone_verified,
+                    target_user.phone_verified_at,
+                )
             else:
                 matching_users = User.objects.filter(phone_number=otp_record.phone_number)
-                matching_users.update(phone_verified=True, phone_verified_at=now)
+                updated_count = matching_users.update(phone_verified=True, phone_verified_at=now)
+                logger.info("[OTP_USER_BULK_PERSISTED] Updated %s user records for phone %s", updated_count, otp_record.phone_number)
 
         logger.info(f"[OTP_VERIFIED] Phone number {otp_record.phone_number} successfully verified.")
         return True
