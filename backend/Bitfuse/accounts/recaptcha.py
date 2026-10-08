@@ -41,12 +41,9 @@ def verify_recaptcha(
     is_debug = getattr(settings, "DEBUG", False)
     is_testing = getattr(settings, "TESTING", False)
 
-    # Production safeguard check
+    # Bypass verification when reCAPTCHA is explicitly disabled
     if not recaptcha_enabled:
-        if not is_debug and not is_testing:
-            logger.error("recaptcha_disabled_in_production: RECAPTCHA_ENABLED is False in production!")
-            raise ValidationError({"detail": "We couldn't verify this request. Please try again."})
-        logger.info("recaptcha_bypassed_dev: RECAPTCHA_ENABLED is False in dev/testing environment.")
+        logger.info("recaptcha_disabled: RECAPTCHA_ENABLED is False.")
         return True
 
     # 1. Validate token presence
