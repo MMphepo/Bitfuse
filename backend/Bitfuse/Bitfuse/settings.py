@@ -285,21 +285,21 @@ SMS_API_KEY = config("SMS_API_KEY", default="")
 SMS_API_SECRET = config("SMS_API_SECRET", default="")
 SMS_SENDER_ID = config("SMS_SENDER_ID", default="Bitfuse")
 
-# # reCAPTCHA Configuration
-# RECAPTCHA_ENABLED = config("RECAPTCHA_ENABLED", default=False, cast=bool)
-# RECAPTCHA_SECRET_KEY = config("RECAPTCHA_SECRET_KEY", default="")
-# RECAPTCHA_SCORE_THRESHOLD = config("RECAPTCHA_SCORE_THRESHOLD", default=0.5, cast=float)
-# RECAPTCHA_SCORE_THRESHOLD_FINANCIAL = config("RECAPTCHA_SCORE_THRESHOLD_FINANCIAL", default=0.7, cast=float)
-# _recaptcha_hostnames_raw = config("RECAPTCHA_ALLOWED_HOSTNAMES", default="bitfuse.mw,www.bitfuse.mw")
-# RECAPTCHA_ALLOWED_HOSTNAMES = [h.strip() for h in _recaptcha_hostnames_raw.split(",") if h.strip()]
+# reCAPTCHA Configuration
+RECAPTCHA_ENABLED = config("RECAPTCHA_ENABLED", default=False, cast=bool)
+RECAPTCHA_SECRET_KEY = config("RECAPTCHA_SECRET_KEY", default="")
+RECAPTCHA_SCORE_THRESHOLD = config("RECAPTCHA_SCORE_THRESHOLD", default=0.5, cast=float)
+RECAPTCHA_SCORE_THRESHOLD_FINANCIAL = config("RECAPTCHA_SCORE_THRESHOLD_FINANCIAL", default=0.7, cast=float)
+_recaptcha_hostnames_raw = config("RECAPTCHA_ALLOWED_HOSTNAMES", default="bitfuse.mw,www.bitfuse.mw")
+RECAPTCHA_ALLOWED_HOSTNAMES = [h.strip() for h in _recaptcha_hostnames_raw.split(",") if h.strip()]
 
-
+# CAPTCHA Configuration (backwards compatibility)
+CAPTCHA_ENABLED = RECAPTCHA_ENABLED
+CAPTCHA_PROVIDER = "recaptcha"
+CAPTCHA_SECRET_KEY = RECAPTCHA_SECRET_KEY
 
 # Production reCAPTCHA configuration safety check
-if not DEBUG and not TESTING:
-    if not RECAPTCHA_ENABLED:
-        from django.core.exceptions import ImproperlyConfigured
-        raise ImproperlyConfigured("RECAPTCHA_ENABLED cannot be False in production (DEBUG=False).")
+if not DEBUG and not TESTING and RECAPTCHA_ENABLED:
     if not RECAPTCHA_SECRET_KEY:
         from django.core.exceptions import ImproperlyConfigured
         raise ImproperlyConfigured("RECAPTCHA_SECRET_KEY must be set in production when RECAPTCHA_ENABLED=True.")

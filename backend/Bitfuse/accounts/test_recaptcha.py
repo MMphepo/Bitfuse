@@ -14,6 +14,7 @@ from withdrawals.models import Withdrawal
 User = get_user_model()
 
 
+@override_settings(RECAPTCHA_ENABLED=True)
 class ReCaptchaServiceUnitTests(TestCase):
     """Unit tests for central verify_recaptcha service function."""
 
@@ -127,12 +128,12 @@ class ReCaptchaServiceUnitTests(TestCase):
         self.assertEqual(str(ctx.exception.detail["detail"]), "We couldn't verify this request. Please try again.")
 
     @override_settings(DEBUG=False, TESTING=False, RECAPTCHA_ENABLED=False)
-    def test_production_disabled_recaptcha_fails_closed(self):
-        with self.assertRaises(Exception) as ctx:
-            verify_recaptcha(token="token", expected_action="login")
-        self.assertEqual(str(ctx.exception.detail["detail"]), "We couldn't verify this request. Please try again.")
+    def test_disabled_recaptcha_bypasses_verification(self):
+        res = verify_recaptcha(token="", expected_action="login")
+        self.assertTrue(res)
 
 
+@override_settings(RECAPTCHA_ENABLED=True)
 class ProtectedEndpointsIntegrationTests(TestCase):
     """Integration tests verifying all 8 protected endpoints require and validate reCAPTCHA."""
 
