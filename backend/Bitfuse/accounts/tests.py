@@ -419,7 +419,7 @@ class AuthVerificationTests(TestCase):
         self.assertTrue(self.user.phone_verified)
         self.assertIsNotNone(self.user.phone_verified_at)
 
-    @mock.patch("accounts.services.tumasend.requests.post")
+    @mock.patch("accounts.tumasend.requests.post")
     def test_tumasend_client_and_otp_lifecycle(self, mock_post):
         mock_resp = mock.MagicMock()
         mock_resp.status_code = 200
