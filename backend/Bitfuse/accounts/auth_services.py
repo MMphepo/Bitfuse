@@ -10,10 +10,13 @@ import requests
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.mail import send_mail
+from django.template.loader import render_to_string
 from django.utils import timezone
+from django.utils.encoding import force_bytes, force_str
+from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
 from rest_framework.exceptions import ValidationError
 
-from .models import EmailVerificationToken, PasswordResetToken, PhoneOTP
+from .models import EmailVerificationToken, PasswordResetToken, PhoneOTP, UserSession
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -449,12 +452,15 @@ class EmailService:
 
     @classmethod
     def send_password_reset_email(cls, email: str) -> str:
+        if not email or not str(email).strip():
+            return "reset_sent"
+
         try:
             user = User.objects.get(email__iexact=email.strip())
         except User.DoesNotExist:
             return "reset_sent"
 
-        # Invalidate previous tokens
+        # Invalidate previous unused tokens
         PasswordResetToken.objects.filter(user=user, used=False).update(used=True)
 
         raw_token = secrets.token_urlsafe(32)
@@ -467,28 +473,49 @@ class EmailService:
             expires_at=expires_at,
         )
 
-        subject = "Reset your Bitfuse Password"
-        message = (
-            f"Hello {user.first_name or user.username},\n\n"
-            f"We received a request to reset your password.\n"
-            f"Your password reset token is:\n\n{raw_token}\n\n"
-            f"This token is valid for 1 hour.\n"
-            f"If you did not request a password reset, please ignore this email."
-        )
+        uidb64 = urlsafe_base64_encode(force_bytes(user.id))
+        frontend_url = getattr(settings, "FRONTEND_URL", "https://bitfuse.mw").rstrip("/")
+        reset_url = f"{frontend_url}/reset-password?uid={uidb64}&token={raw_token}"
 
-        send_mail(
-            subject=subject,
-            message=message,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[user.email],
-            fail_silently=False,
-        )
+        context = {
+            "name": user.first_name or user.username,
+            "reset_url": reset_url,
+            "current_year": timezone.now().year,
+        }
+
+        subject = "Reset Your BitFuse Password"
+        html_message = render_to_string("emails/password_reset.html", context)
+        plain_message = render_to_string("emails/password_reset.txt", context)
+
+        try:
+            sent_count = send_mail(
+                subject=subject,
+                message=plain_message,
+                html_message=html_message,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[user.email],
+                fail_silently=False,
+            )
+            logger.info(f"[EMAIL_SENT] Password reset email sent to {user.email} (sent_count={sent_count}, backend={settings.EMAIL_BACKEND})")
+        except Exception as exc:
+            logger.error(f"[EMAIL_DELIVERY_FAILURE] Password reset email to user {user.id} ({user.email}) failed: {exc}")
+
         return raw_token
 
     @classmethod
-    def confirm_password_reset(cls, raw_token: str, new_password: str) -> User:
+    def confirm_password_reset(cls, raw_token: str, new_password: str, uid: str = None) -> User:
+        if not raw_token or not str(raw_token).strip():
+            raise ValidationError({"token": ["Invalid or expired password reset token."]})
+
         token_hash = cls._hash_token(raw_token.strip())
         now = timezone.now()
+
+        decoded_user_id = None
+        if uid and str(uid).strip():
+            try:
+                decoded_user_id = force_str(urlsafe_base64_decode(str(uid).strip()))
+            except Exception:
+                raise ValidationError({"token": ["Invalid user identifier or reset link."]})
 
         reset_token = PasswordResetToken.objects.filter(
             token_hash=token_hash,
@@ -499,12 +526,22 @@ class EmailService:
         if not reset_token:
             raise ValidationError({"token": ["Invalid or expired password reset token."]})
 
+        if decoded_user_id and str(reset_token.user.id) != str(decoded_user_id):
+            raise ValidationError({"token": ["Invalid user identifier or reset link."]})
+
         reset_token.used = True
         reset_token.save(update_fields=["used"])
 
         user = reset_token.user
         user.set_password(new_password)
         user.save()
+
+        # Revoke all active sessions for security after password reset
+        UserSession.objects.filter(user=user, is_active=True).update(
+            is_active=False,
+            revoked_at=now,
+        )
+
         return user
 
 
