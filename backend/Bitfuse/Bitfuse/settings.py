@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 import sys
 from pathlib import Path
 
+from datetime import timedelta
 from decouple import config, RepositoryEnv
 import dj_database_url
 
@@ -40,7 +41,16 @@ if len(JWT_SIGNING_KEY) < 32:
 
 SIMPLE_JWT = {
     "SIGNING_KEY": JWT_SIGNING_KEY,
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
+    "UPDATE_LAST_LOGIN": True,
 }
+
+# Session Inactivity & Lifetime Configuration
+SESSION_INACTIVITY_TIMEOUT_MINUTES = config("SESSION_INACTIVITY_TIMEOUT_MINUTES", default=15, cast=int)
+SESSION_MAX_LIFETIME_HOURS = config("SESSION_MAX_LIFETIME_HOURS", default=24, cast=int)
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config("DEBUG", default=True, cast=bool)
@@ -59,6 +69,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "rest_framework",
     "rest_framework_simplejwt",
+    "rest_framework_simplejwt.token_blacklist",
     "corsheaders",
     "storages",
     "accounts",
@@ -133,23 +144,23 @@ AUTH_USER_MODEL = "accounts.User"
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        "accounts.authentication.CustomJWTAuthentication",
     ],
     "DEFAULT_THROTTLE_CLASSES": [
         "rest_framework.throttling.AnonRateThrottle",
         "rest_framework.throttling.UserRateThrottle",
     ],
     "DEFAULT_THROTTLE_RATES": {
-        "anon": "30/minute",
-        "user": "120/minute",
-        "auth": "10/minute",
-        "financial": "20/minute",
+        "anon": "10000/minute" if TESTING else "30/minute",
+        "user": "10000/minute" if TESTING else "120/minute",
+        "auth": "10000/minute" if TESTING else "10/minute",
+        "financial": "10000/minute" if TESTING else "20/minute",
     },
     "EXCEPTION_HANDLER": "Bitfuse.exceptions.custom_exception_handler",
 }
 
-BLNK_BASE_URL = config("BLNK_BASE_URL")
-BLNK_SECRET_KEY = config("BLNK_SECRET_KEY", default="")
+BLNK_BASE_URL = config("BLNK_BASE_URL", default="https://bitfuse-blnk-server-qfn2.onrender.com")
+BLNK_API_KEY = config("BLNK_API_KEY", default="")
 
 # Admin email notifications for KYC submissions and trade orders.
 EMAIL_BACKEND = config(
@@ -266,3 +277,58 @@ USE_TZ = True
 STATIC_URL = "/static/"
 
 STATIC_ROOT = BASE_DIR / "staticfiles"
+
+# Email Configuration
+EMAIL_HOST = config("EMAIL_HOST", default="")
+EMAIL_PORT = config("EMAIL_PORT", default=587, cast=int)
+EMAIL_USE_TLS = config("EMAIL_USE_TLS", default=True, cast=bool)
+EMAIL_HOST_USER = config("EMAIL_HOST_USER", default="")
+EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD", default="")
+DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="Bitfuse <support@bitfuse.mw>")
+
+default_email_backend = "django.core.mail.backends.smtp.EmailBackend" if EMAIL_HOST else "django.core.mail.backends.console.EmailBackend"
+EMAIL_BACKEND = config("EMAIL_BACKEND", default=default_email_backend)
+
+FRONTEND_URL = config("FRONTEND_URL", default="https://bitfuse.mw")
+EMAIL_VERIFICATION_TOKEN_EXPIRY_MINUTES = config("EMAIL_VERIFICATION_TOKEN_EXPIRY_MINUTES", default=30, cast=int)
+EMAIL_VERIFICATION_RESEND_SECONDS = config("EMAIL_VERIFICATION_RESEND_SECONDS", default=60, cast=int)
+EMAIL_VERIFICATION_MAX_REQUESTS_PER_HOUR = config("EMAIL_VERIFICATION_MAX_REQUESTS_PER_HOUR", default=5, cast=int)
+
+# SMS & OTP Configuration
+SMS_PROVIDER = config("SMS_PROVIDER", default="tumasend")  # Options: tumasend, console, africas_talking, twilio
+SMS_API_KEY = config("SMS_API_KEY", default="")
+SMS_API_SECRET = config("SMS_API_SECRET", default="")
+SMS_SENDER_ID = config("SMS_SENDER_ID", default="Bitfuse")
+
+# TumaSend Configuration
+TUMASEND_API_URL = config("TUMASEND_API_URL", default="https://gateway.tumasend.com")
+TUMASEND_API_KEY = config("TUMASEND_API_KEY", default="")
+TUMASEND_SENDER_ID = config("TUMASEND_SENDER_ID", default="Bitfuse")
+PHONE_VERIFICATION_OTP_EXPIRY_SECONDS = config("PHONE_VERIFICATION_OTP_EXPIRY_SECONDS", default=300, cast=int)
+PHONE_VERIFICATION_MAX_ATTEMPTS = config("PHONE_VERIFICATION_MAX_ATTEMPTS", default=5, cast=int)
+PHONE_VERIFICATION_RESEND_COOLDOWN_SECONDS = config("PHONE_VERIFICATION_RESEND_COOLDOWN_SECONDS", default=60, cast=int)
+PHONE_VERIFICATION_MAX_SENDS_PER_HOUR = config("PHONE_VERIFICATION_MAX_SENDS_PER_HOUR", default=5, cast=int)
+PHONE_VERIFICATION_MAX_SENDS_PER_DAY = config("PHONE_VERIFICATION_MAX_SENDS_PER_DAY", default=10, cast=int)
+
+# reCAPTCHA Configuration
+RECAPTCHA_ENABLED = config("RECAPTCHA_ENABLED", default=False, cast=bool)
+RECAPTCHA_SECRET_KEY = config("RECAPTCHA_SECRET_KEY", default="")
+RECAPTCHA_SCORE_THRESHOLD = config("RECAPTCHA_SCORE_THRESHOLD", default=0.5, cast=float)
+RECAPTCHA_SCORE_THRESHOLD_FINANCIAL = config("RECAPTCHA_SCORE_THRESHOLD_FINANCIAL", default=0.7, cast=float)
+_recaptcha_hostnames_raw = config("RECAPTCHA_ALLOWED_HOSTNAMES", default="bitfuse.mw,www.bitfuse.mw")
+RECAPTCHA_ALLOWED_HOSTNAMES = [h.strip() for h in _recaptcha_hostnames_raw.split(",") if h.strip()]
+
+# CAPTCHA Configuration (backwards compatibility)
+CAPTCHA_ENABLED = RECAPTCHA_ENABLED
+CAPTCHA_PROVIDER = "recaptcha"
+CAPTCHA_SECRET_KEY = RECAPTCHA_SECRET_KEY
+
+# Production reCAPTCHA configuration safety check
+if not DEBUG and not TESTING and RECAPTCHA_ENABLED:
+    if not RECAPTCHA_SECRET_KEY:
+        from django.core.exceptions import ImproperlyConfigured
+        raise ImproperlyConfigured("RECAPTCHA_SECRET_KEY must be set in production when RECAPTCHA_ENABLED=True.")
+
+# Google OAuth Configuration
+GOOGLE_CLIENT_ID = config("GOOGLE_CLIENT_ID", default="50963774471-dnqglh5mpe7s0bh6r3li3tdr1o31fibf.apps.googleusercontent.com")
+GOOGLE_CLIENT_SECRET = config("GOOGLE_CLIENT_SECRET", default="")

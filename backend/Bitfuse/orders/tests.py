@@ -30,7 +30,7 @@ class BuyPaymentFlowTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(
             username="john", email="john@example.com", password="pw", phone_number="+265991000000",
-            verification_status="verified",
+            email_verified=True, phone_verified=True, verification_status="verified",
         )
         self.admin = User.objects.create_superuser(
             username="admin", email="admin@example.com", password="pw", phone_number="+265991000001",
@@ -63,7 +63,7 @@ class BuyPaymentFlowTests(TestCase):
 
     def create_order(self, usdt="50"):
         response = self.client.post(
-            reverse("order-buy"), {"amount_usdt": usdt, "payment_method": "airtel_money"}, format="json"
+            reverse("order-buy"), {"amount_usdt": usdt, "payment_method": "airtel_money", "recaptcha_token": "test-token"}, format="json"
         )
         self.assertEqual(response.status_code, 201, response.data)
         return Order.objects.get(id=response.data["id"])
@@ -175,6 +175,24 @@ class BuyPaymentFlowTests(TestCase):
 
         order.refresh_from_db()
         self.assertEqual(order.status, Order.COMPLETED)
+
+    def test_buy_completion_case_insensitive_and_lowercase_blnk_status(self):
+        """Regression test: verify buy order completes when Blnk returns status in lowercase or mixed case (e.g., 'applied', 'applied_in_fulfillment')."""
+        order = self.create_order()
+        submit_payment(order, self.user, "CM999888777")
+
+        self.blnk.return_value.create_transaction.side_effect = [
+            {"transaction_id": "blnk-lc-1", "status": "applied"},
+            {"transaction_id": "blnk-lc-2", "status": "applied_in_fulfillment"},
+        ]
+        self.blnk.return_value.get_transaction.return_value = {"status": "applied"}
+
+        verify_payment(order, self.admin)
+        order.refresh_from_db()
+
+        self.assertEqual(order.status, Order.COMPLETED)
+        self.assertIsNotNone(order.completed_at)
+        self.assertTrue(Transaction.objects.filter(reference=order.reference_number, status="Completed").exists())
 
     def test_admin_approve_payment_action_messages_warning_when_settling(self):
         from orders.admin import OrderAdmin

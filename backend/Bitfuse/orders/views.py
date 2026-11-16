@@ -3,6 +3,8 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.generics import get_object_or_404
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from accounts.recaptcha import get_client_ip, verify_recaptcha
+from Bitfuse.throttling import ConfigurableScopedRateThrottle
 
 from accounts.email_notifications import notify_admin
 from accounts.models import Rate
@@ -31,9 +33,22 @@ from .services import (
 
 
 def _require_verified_kyc(user):
-    """KYC gate: only fully verified users can transact."""
-    if getattr(user, "verification_status", "unverified") != "verified":
-        raise PermissionDenied("Complete identity verification before trading on Bitfuse.")
+    """Trading gate: requires active account, verified email, verified phone, and verified KYC."""
+    if not user or not user.is_authenticated:
+        raise PermissionDenied("Authentication required.")
+    if not user.is_active:
+        raise PermissionDenied("Account is inactive.")
+    if not user.email_verified:
+        raise PermissionDenied("Please verify your email address to enable trading.")
+    if not user.phone_verified:
+        raise PermissionDenied("Please complete phone verification to enable trading.")
+    if user.verification_status != "verified":
+        if user.verification_status == "pending":
+            raise PermissionDenied("Your KYC verification is currently pending review.")
+        elif user.verification_status == "rejected":
+            raise PermissionDenied("Your KYC verification was rejected. Please resubmit identity verification.")
+        else:
+            raise PermissionDenied("Complete KYC identity verification to enable trading.")
 
 
 def _error(exc):
@@ -52,6 +67,8 @@ def _notify_order_created(order):
 class CreateBuyOrderView(generics.CreateAPIView):
     serializer_class = CreateBuyOrderSerializer
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ConfigurableScopedRateThrottle]
+    throttle_scope = "financial"
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -61,6 +78,13 @@ class CreateBuyOrderView(generics.CreateAPIView):
         return Response(OrderSerializer(order).data, status=status.HTTP_201_CREATED)
 
     def post(self, request, *args, **kwargs):
+        recaptcha_token = request.data.get("recaptcha_token")
+        verify_recaptcha(
+            recaptcha_token,
+            expected_action="buy",
+            is_financial=True,
+            request_ip=get_client_ip(request),
+        )
         _require_verified_kyc(request.user)
         return super().post(request, *args, **kwargs)
 
@@ -68,6 +92,8 @@ class CreateBuyOrderView(generics.CreateAPIView):
 class CreateSellOrderView(generics.CreateAPIView):
     serializer_class = CreateSellOrderSerializer
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ConfigurableScopedRateThrottle]
+    throttle_scope = "financial"
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -77,6 +103,13 @@ class CreateSellOrderView(generics.CreateAPIView):
         return Response(OrderSerializer(order).data, status=status.HTTP_201_CREATED)
 
     def post(self, request, *args, **kwargs):
+        recaptcha_token = request.data.get("recaptcha_token")
+        verify_recaptcha(
+            recaptcha_token,
+            expected_action="sell",
+            is_financial=True,
+            request_ip=get_client_ip(request),
+        )
         _require_verified_kyc(request.user)
         return super().post(request, *args, **kwargs)
 

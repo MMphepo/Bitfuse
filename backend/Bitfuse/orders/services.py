@@ -20,7 +20,7 @@ from django.conf import settings
 
 from accounts.blnk_client import BlnkClient
 from accounts.models import Notification, PlatformAccount, Rate, Transaction, Wallet
-from accounts.services import ensure_frozen_balance, ensure_user_wallets
+from accounts.services import ensure_frozen_balance, ensure_user_wallets, invalidate_wallet_balance_cache
 
 from .models import Order, OrderAuditLog, OrderSettlement
 from .payment_methods import method_details, normalise_transaction_id, transaction_id_error
@@ -174,6 +174,8 @@ def lock_sell_order(order):
     )
     order.blnk_transaction_refs.append(txn["transaction_id"])
     order.save(update_fields=["blnk_transaction_refs"])
+
+    invalidate_wallet_balance_cache(order.user.id)
 
 
 def method_label(payment_method: str) -> str:
@@ -380,13 +382,17 @@ def verify_payment(order, admin, received_amount=None, note=""):
 def _is_blnk_settled_status(status_val) -> bool:
     """Helper to check if a Blnk transaction status indicates terminal settlement."""
     if isinstance(status_val, str):
-        return status_val.upper() in ["APPLIED", "COMMITTED", "COMPLETED", "APPLIED_IN_FULFILLMENT"]
+        return status_val.upper() in ["APPLIED", "COMMITTED", "COMPLETED", "APPLIED_IN_FULFILLMENT", "SUCCESS", "SUCCESSFUL"]
+    if isinstance(status_val, dict):
+        return _is_blnk_settled_status(status_val.get("status") or status_val.get("state"))
     return False
 
 
 def _is_blnk_failed_status(status_val) -> bool:
     if isinstance(status_val, str):
-        return status_val.upper() in ["REJECTED", "FAILED", "VOID"]
+        return status_val.upper() in ["REJECTED", "FAILED", "VOID", "CANCELLED", "DECLINED"]
+    if isinstance(status_val, dict):
+        return _is_blnk_failed_status(status_val.get("status") or status_val.get("state"))
     return False
 
 
@@ -539,6 +545,7 @@ def complete_buy_order(order, admin=None):
                     f"{locked.usdt_amount} USDT has been credited to your Bitfuse account.",
                     locked.reference_number,
                 )
+                invalidate_wallet_balance_cache(locked.user.id)
             else:
                 log_order_event(
                     locked, "settling_queued", actor=admin, from_status=Order.PAYMENT_VERIFIED, to_status=Order.SETTLING,
@@ -607,3 +614,4 @@ def complete_sell_order(order):
     order.save()
 
     _write_history(order, method_label(order.payment_method), order.phone or "", order.fee_amount)
+    invalidate_wallet_balance_cache(order.user.id)

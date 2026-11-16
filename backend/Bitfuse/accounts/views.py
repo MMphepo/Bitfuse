@@ -1,12 +1,17 @@
 from django.contrib.auth import get_user_model
-from rest_framework import generics, permissions, serializers
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
+from rest_framework import generics, permissions, status, serializers
+from rest_framework.exceptions import ValidationError
+from Bitfuse.throttling import ConfigurableScopedRateThrottle
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework_simplejwt.views import TokenObtainPairView
-from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 
-from .models import Notification, Transaction, Wallet
+from django.utils import timezone
+from .models import Notification, Transaction, UserSession, Wallet
+from .session_services import create_user_session
 from .serializers import (
     NotificationSerializer,
     OrderHistorySerializer,
@@ -16,92 +21,513 @@ from .serializers import (
     TransferSerializer,
     UserSerializer,
 )
+from .auth_services import (
+    CaptchaService,
+    EmailService,
+    GoogleAuthService,
+    OTPService,
+    normalize_phone_number,
+)
+from .recaptcha import get_client_ip, verify_recaptcha
 from .services import perform_p2p_transfer
 from orders.models import Order
 
 User = get_user_model()
 
 
-class LoginView(TokenObtainPairView):
-    """POST /api/v1/auth/login/
-    Debug-instrumented simple-jwt token obtain view.
-    """
-    throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "auth"
-
-    def post(self, request, *args, **kwargs):
-        print("[login] request.data:", request.data)
-        serializer = self.get_serializer(data=request.data)
-        print("[login] serializer initialized")
-        is_valid = serializer.is_valid()
-        print("[login] serializer.is_valid():", is_valid)
-        print("[login] serializer.errors:", serializer.errors)
-
-        if not is_valid:
-            print("[login] returning validation errors")
-            return Response(serializer.errors, status=400)
-
-        print("[login] credentials valid, producing tokens...")
-        response = super().post(request, *args, **kwargs)
-        print("[login] response status:", response.status_code)
-        print("[login] response data keys:", list(response.data.keys()) if hasattr(response, "data") else "n/a")
-        return response
-
-
 class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
     serializer_class = RegisterSerializer
     permission_classes = [permissions.AllowAny]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ConfigurableScopedRateThrottle]
     throttle_scope = "auth"
 
     def create(self, request, *args, **kwargs):
-        print("[register] request.data:", request.data)
         serializer = self.get_serializer(data=request.data)
-        print("[register] serializer initialized")
-        is_valid = serializer.is_valid()
-        print("[register] serializer.is_valid():", is_valid)
-        print("[register] serializer.errors:", serializer.errors)
+        serializer.is_valid(raise_exception=True)
 
-        if not is_valid:
-            print("[register] returning validation errors")
-            return Response(serializer.errors, status=400)
+        recaptcha_token = request.data.get("recaptcha_token")
+        verify_recaptcha(
+            recaptcha_token,
+            expected_action="register",
+            request_ip=get_client_ip(request),
+        )
 
         user = serializer.save()
-        print("[register] user created:", user.id, user.username)
-        refresh = RefreshToken.for_user(user)
-        response_data = serializer.data
-        response_data["tokens"] = {
-            "refresh": str(refresh),
-            "access": str(refresh.access_token),
+
+        # Send verification email asynchronously / inline
+        try:
+            EmailService.send_verification_email(user)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Failed to send verification email on register: %s", exc)
+
+        session, refresh = create_user_session(user, request)
+
+        return Response(
+            {
+                "success": True,
+                "message": "Account created successfully. Please check your email to verify your account.",
+                "data": {
+                    "user": UserSerializer(user).data,
+                    "tokens": {
+                        "refresh": str(refresh),
+                        "access": str(refresh.access_token),
+                    },
+                },
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class LoginView(APIView):
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ConfigurableScopedRateThrottle]
+    throttle_scope = "auth"
+
+    def post(self, request):
+        recaptcha_token = request.data.get("recaptcha_token")
+        verify_recaptcha(
+            recaptcha_token,
+            expected_action="login",
+            request_ip=get_client_ip(request),
+        )
+
+        email_or_username = request.data.get("email") or request.data.get("username")
+        password = request.data.get("password")
+
+        if not email_or_username or not password:
+            raise ValidationError(
+                {
+                    "email": ["Email or username is required."] if not email_or_username else [],
+                    "password": ["Password is required."] if not password else [],
+                }
+            )
+
+        # Look up user by email or username
+        email_clean = str(email_or_username).strip().lower()
+        user = (
+            User.objects.filter(email__iexact=email_clean).first()
+            or User.objects.filter(username__iexact=email_clean).first()
+        )
+
+        if not user or not user.check_password(password):
+            return Response(
+                {"success": False, "message": "Invalid email or password."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        if not user.is_active:
+            return Response(
+                {"success": False, "message": "Account is disabled. Please contact support."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        session, refresh = create_user_session(user, request)
+
+        return Response(
+            {
+                "success": True,
+                "message": "Login successful.",
+                "data": {
+                    "user": UserSerializer(user).data,
+                    "tokens": {
+                        "refresh": str(refresh),
+                        "access": str(refresh.access_token),
+                    },
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class LogoutView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        refresh_token = request.data.get("refresh")
+        if not refresh_token:
+            raise ValidationError({"refresh": ["Refresh token is required."]})
+
+        try:
+            token = RefreshToken(refresh_token)
+            session_key = token.get("session_key")
+            jti = token.get("jti")
+            now = timezone.now()
+            if session_key:
+                UserSession.objects.filter(session_key=session_key).update(
+                    is_active=False, revoked_at=now
+                )
+            elif jti:
+                UserSession.objects.filter(current_jti=jti).update(
+                    is_active=False, revoked_at=now
+                )
+            token.blacklist()
+        except TokenError as exc:
+            raise ValidationError({"refresh": [str(exc)]})
+
+        return Response(
+            {"success": True, "message": "Successfully logged out."},
+            status=status.HTTP_200_OK,
+        )
+
+
+class VerifyEmailView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        token = request.query_params.get("token") or request.data.get("token")
+        return self._verify(token)
+
+    def post(self, request):
+        token = request.data.get("token") or request.query_params.get("token")
+        return self._verify(token)
+
+    def _verify(self, token):
+        if not token:
+            return Response(
+                {"success": False, "code": "INVALID_TOKEN", "message": "This verification link is invalid."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            user = EmailService.verify_email_token(token)
+            return Response(
+                {
+                    "success": True,
+                    "code": "EMAIL_VERIFIED",
+                    "message": "Email verified successfully.",
+                    "data": {"user": UserSerializer(user).data},
+                },
+                status=status.HTTP_200_OK,
+            )
+        except ValidationError as exc:
+            detail = exc.detail
+            if isinstance(detail, dict) and "code" in detail:
+                code_val = detail["code"]
+                msg_val = detail.get("message", "Email verification failed.")
+                return Response(
+                    {"success": False, "code": code_val, "message": msg_val},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            msg = str(detail.get("token", [str(detail)])[0]) if isinstance(detail, dict) else str(detail)
+            return Response(
+                {"success": False, "code": "INVALID_TOKEN", "message": msg},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+
+class ResendEmailVerificationView(APIView):
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ConfigurableScopedRateThrottle]
+    throttle_scope = "auth"
+
+    def post(self, request):
+        recaptcha_token = request.data.get("recaptcha_token")
+        verify_recaptcha(
+            recaptcha_token,
+            expected_action="resend_verification",
+            request_ip=get_client_ip(request),
+        )
+
+        email = request.data.get("email")
+        user = None
+
+        if request.user and request.user.is_authenticated:
+            user = request.user
+        elif email and str(email).strip():
+            user = User.objects.filter(email__iexact=str(email).strip()).first()
+
+        if user and not user.email_verified:
+            try:
+                EmailService.send_verification_email(user)
+            except ValidationError:
+                raise
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning("[EMAIL_RESEND_ERROR] Resend verification error: %s", exc)
+
+        # Standard generic response to prevent email enumeration
+        return Response(
+            {
+                "success": True,
+                "message": "If an account exists with this email address, a verification email will be sent.",
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class RequestOTPView(APIView):
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ConfigurableScopedRateThrottle]
+    throttle_scope = "auth"
+
+    def post(self, request):
+        user = request.user if request.user and request.user.is_authenticated else None
+        phone_number = request.data.get("phone_number")
+
+        if not phone_number and user and user.phone_number:
+            phone_number = user.phone_number
+
+        if not phone_number:
+            raise ValidationError({"phone_number": ["Phone number is required."]})
+
+        # If user is logged in and already verified on this phone number, short-circuit
+        if user and user.phone_verified and user.phone_number == normalize_phone_number(phone_number):
+            return Response(
+                {
+                    "success": True,
+                    "message": "Phone number is already verified.",
+                    "phone_verified": True,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        otp_result = OTPService.generate_otp(phone_number=phone_number, user=user)
+
+        resp_data = {
+            "success": True,
+            "message": "Verification code sent.",
+            "expires_in": otp_result["expires_in"],
+            "resend_after": otp_result["resend_after"],
         }
-        print("[register] response data:", response_data)
-        return Response(response_data, status=201)
+
+        # Surface dev code in test/console mode
+        from django.conf import settings
+        if getattr(settings, "TESTING", False) or getattr(settings, "SMS_PROVIDER", "tumasend").lower() == "console":
+            resp_data["dev_code"] = otp_result["code"]
+
+        return Response(resp_data, status=status.HTTP_200_OK)
+
+
+class VerifyOTPView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        user = request.user if request.user and request.user.is_authenticated else None
+        phone_number = request.data.get("phone_number")
+        code = request.data.get("code") or request.data.get("otp")
+
+        if not code:
+            raise ValidationError({"code": ["Verification code is required."]})
+
+        OTPService.verify_otp(phone_number=phone_number, code=code, user=user)
+
+        return Response(
+            {
+                "success": True,
+                "message": "Mobile number verified successfully.",
+                "phone_verified": True,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class PasswordResetRequestView(APIView):
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ConfigurableScopedRateThrottle]
+    throttle_scope = "auth"
+
+    def post(self, request):
+        recaptcha_token = request.data.get("recaptcha_token")
+        verify_recaptcha(
+            recaptcha_token,
+            expected_action="password_reset",
+            request_ip=get_client_ip(request),
+        )
+
+        email = request.data.get("email")
+        if not email:
+            raise ValidationError({"email": ["Email address is required."]})
+
+        EmailService.send_password_reset_email(email)
+
+        return Response(
+            {
+                "success": True,
+                "message": "If an account exists for that email address, password reset instructions have been sent.",
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class PasswordResetConfirmView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        token = request.data.get("token")
+        new_password = request.data.get("new_password")
+        password_confirmation = request.data.get("password_confirmation")
+
+        if not token or not new_password or not password_confirmation:
+            raise ValidationError(
+                {
+                    "token": ["Reset token is required."] if not token else [],
+                    "new_password": ["New password is required."] if not new_password else [],
+                    "password_confirmation": ["Password confirmation is required."] if not password_confirmation else [],
+                }
+            )
+
+        if new_password != password_confirmation:
+            raise ValidationError({"password_confirmation": ["Passwords do not match."]})
+
+        try:
+            validate_password(new_password)
+        except DjangoValidationError as exc:
+            raise ValidationError({"new_password": list(exc.messages)})
+
+        user = EmailService.confirm_password_reset(token, new_password)
+
+        return Response(
+            {
+                "success": True,
+                "message": "Password reset successfully. You may now log in with your new password.",
+                "data": {"user": UserSerializer(user).data},
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class GoogleAuthView(APIView):
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ConfigurableScopedRateThrottle]
+    throttle_scope = "auth"
+
+    def post(self, request):
+        recaptcha_token = request.data.get("recaptcha_token")
+        if recaptcha_token:
+            verify_recaptcha(
+                recaptcha_token,
+                expected_action="google_auth",
+                request_ip=get_client_ip(request),
+            )
+
+        credential = request.data.get("credential")
+        id_token_input = request.data.get("id_token")
+
+        if credential and id_token_input and str(credential).strip() != str(id_token_input).strip():
+            raise ValidationError(
+                {"credential": ["Conflicting 'credential' and 'id_token' values provided in request."]}
+            )
+
+        token_to_verify = credential or id_token_input
+        if not token_to_verify or not str(token_to_verify).strip():
+            raise ValidationError({"credential": ["Google credential is required."]})
+
+        google_payload = GoogleAuthService.verify_google_id_token(token_to_verify)
+        google_sub = google_payload.get("sub")
+        google_email = google_payload.get("email", "").lower().strip()
+        google_email_verified = google_payload.get("email_verified", False)
+        given_name = google_payload.get("given_name", "Google")
+        family_name = google_payload.get("family_name", "User")
+
+        if not google_sub:
+            raise ValidationError({"credential": ["Google credential did not return a valid sub identifier."]})
+
+        if not google_email:
+            raise ValidationError({"credential": ["Google token does not contain a valid email."]})
+
+        from django.db import transaction, IntegrityError
+
+        user = None
+
+        with transaction.atomic():
+            # 1. Search existing user by google_id (with lock)
+            user = User.objects.select_for_update().filter(google_id=google_sub).first()
+
+            if not user:
+                # 2. Search existing user by email (with lock)
+                existing_user = User.objects.select_for_update().filter(email__iexact=google_email).first()
+
+                if existing_user:
+                    # Security rule: Check if existing account already has a different google_id
+                    if existing_user.google_id and existing_user.google_id != google_sub:
+                        raise ValidationError(
+                            {"detail": "An existing account with this email is linked to a different Google identity."}
+                        )
+
+                    # Account linking requirement
+                    if existing_user.email_verified and google_email_verified:
+                        existing_user.google_id = google_sub
+                        existing_user.save(update_fields=["google_id"])
+                        user = existing_user
+                    else:
+                        raise ValidationError(
+                            {
+                                "detail": "An account with this email exists. Please verify your email first before linking Google Sign-In."
+                            }
+                        )
+                else:
+                    # 3. Create new user safely handling concurrency
+                    import uuid, re
+                    base_username = re.sub(r"[^\w]", "_", google_email.split("@")[0]).lower()[:20] or "google_user"
+                    username = base_username
+                    while User.objects.filter(username=username).exists():
+                        username = f"{base_username}_{uuid.uuid4().hex[:6]}"
+
+                    try:
+                        user = User.objects.create_user(
+                            username=username,
+                            email=google_email,
+                            first_name=given_name,
+                            last_name=family_name,
+                            google_id=google_sub,
+                            phone_number=None,
+                            email_verified=google_email_verified,
+                            phone_verified=False,
+                            verification_status="unverified",
+                        )
+                    except IntegrityError:
+                        # Concurrency fallback: re-fetch user if created concurrently
+                        user = User.objects.filter(google_id=google_sub).first()
+                        if not user:
+                            user = User.objects.filter(email__iexact=google_email).first()
+
+        if not user:
+            raise ValidationError({"detail": "Google sign-in could not be completed. Please try again."})
+
+        if not user.is_active:
+            return Response(
+                {"success": False, "message": "Account is disabled. Please contact support."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        session, refresh = create_user_session(user, request)
+
+        return Response(
+            {
+                "success": True,
+                "message": "Google authentication successful.",
+                "data": {
+                    "user": UserSerializer(user).data,
+                    "tokens": {
+                        "refresh": str(refresh),
+                        "access": str(refresh.access_token),
+                    },
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class MeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        return Response(UserSerializer(request.user).data)
-
-
-class WalletBalanceSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Wallet
-        fields = ["currency", "blnk_balance_id", "created_at"]
+        return Response(
+            {
+                "success": True,
+                "data": UserSerializer(request.user).data,
+            }
+        )
 
 
 class WalletBalanceView(APIView):
-    """
-    GET /api/v1/auth/wallets/
-    Returns real numeric MWK and USDT wallet balances for the authenticated user.
-    """
+    """GET /api/v1/auth/wallets/ - returns real MWK and USDT balances."""
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         from accounts.services import fetch_wallet_balance
-        from rest_framework import status
 
         try:
             balances = fetch_wallet_balance(request.user)
@@ -112,17 +538,17 @@ class WalletBalanceView(APIView):
             return Response(response_data, status=status.HTTP_200_OK)
         except Exception as exc:
             return Response(
-                {"detail": "Ledger service temporarily unavailable. Please try again shortly.", "error": str(exc)},
+                {
+                    "success": False,
+                    "code": "BALANCE_SERVICE_UNAVAILABLE",
+                    "message": "Wallet balance is temporarily unavailable. Please try again shortly.",
+                    "error": str(exc),
+                },
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
 
 class AdminReconciliationView(APIView):
-    """
-    GET /api/v1/admin/reconcile/
-    Admin-only endpoint to detect discrepancies between application state and Blnk ledger balances.
-    Read-only audit tool: flags discrepancies without mutating financial state.
-    """
     permission_classes = [permissions.IsAdminUser]
 
     def get(self, request):
@@ -164,11 +590,9 @@ class AdminReconciliationView(APIView):
                     "error": str(exc),
                 })
 
-        # Calculate active escrow USDT in pending sell orders
         active_sells = Order.objects.filter(order_type="sell", status=Order.AWAITING_DEPOSIT)
         total_escrow_usdt = sum((o.usdt_amount for o in active_sells), Decimal("0"))
 
-        # Pending withdrawals count and total amount
         pending_withdrawals = Withdrawal.objects.filter(status="PENDING")
         total_pending_withdrawal_usdt = sum((w.amount for w in pending_withdrawals), Decimal("0"))
 
@@ -191,18 +615,15 @@ class AdminReconciliationView(APIView):
         return Response(report, status=status.HTTP_200_OK)
 
 
+from .permissions import IsTradingEligible
+
+
 class WalletSendView(APIView):
-    """
-    POST /api/v1/auth/wallets/send/
-    Performs internal peer-to-peer USDT or MWK transfer to another Bitfuse user.
-    """
-    permission_classes = [permissions.IsAuthenticated]
-    throttle_classes = [ScopedRateThrottle]
+    permission_classes = [permissions.IsAuthenticated, IsTradingEligible]
+    throttle_classes = [ConfigurableScopedRateThrottle]
     throttle_scope = "financial"
 
     def post(self, request):
-        from rest_framework import status
-
         serializer = TransferCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
@@ -215,19 +636,17 @@ class WalletSendView(APIView):
                 currency=data["currency"],
                 idempotency_key=data["idempotency_key"],
             )
-            return Response(TransferSerializer(transfer).data, status=status.HTTP_200_OK)
+            return Response({"success": True, "data": TransferSerializer(transfer).data}, status=status.HTTP_200_OK)
         except ValueError as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"success": False, "message": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as exc:
             return Response(
-                {"detail": "Transfer could not be processed.", "error": str(exc)},
+                {"success": False, "message": "Transfer could not be processed.", "error": str(exc)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
 
 class NotificationListView(generics.ListAPIView):
-    """GET /api/v1/notifications/ — order lifecycle updates for the current user."""
-
     serializer_class = NotificationSerializer
     permission_classes = [permissions.IsAuthenticated]
 
@@ -236,45 +655,27 @@ class NotificationListView(generics.ListAPIView):
 
 
 class NotificationReadView(APIView):
-    """POST /api/v1/notifications/{id}/read/ — mark one notification as read."""
-
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, notification_id):
         updated = Notification.objects.filter(id=notification_id, user=request.user).update(read=True)
         if not updated:
-            return Response({"detail": "Notification not found."}, status=404)
-        return Response({"read": True})
+            return Response({"success": False, "message": "Notification not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"success": True, "read": True})
 
 
 class TransactionListView(APIView):
-    """
-    GET /api/v1/transactions/
-    Returns the transaction history for the authenticated user.
-
-    Combines the user's immutable Transaction records with their live Order
-    records (every buy/sell the user has placed), so the history page reflects
-    the actual activity of the logged-in user.
-    """
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         user = request.user
-        print("[transactions] GET /api/v1/transactions/ for user:", user.id, user.username)
-
         transactions = Transaction.objects.filter(user=user)
         orders = Order.objects.filter(user=user)
-
-        print("[transactions] Transaction count:", transactions.count())
-        print("[transactions] Order count:", orders.count())
 
         tx_data = TransactionSerializer(transactions, many=True).data
         order_data = OrderHistorySerializer(orders, many=True).data
 
         merged = list(tx_data) + list(order_data)
-        # Sort newest first by created_at (ISO timestamps sort lexicographically).
         merged.sort(key=lambda item: item.get("created_at") or "", reverse=True)
 
-        print("[transactions] merged history count:", len(merged))
-        print("[transactions] merged data:", merged)
-        return Response(merged)
+        return Response({"success": True, "data": merged})

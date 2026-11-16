@@ -3,17 +3,19 @@ from decimal import Decimal
 
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+from django.utils import timezone
 
 
 class User(AbstractUser):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    phone_number = models.CharField(max_length=20, unique=True, default="")
+    phone_number = models.CharField(max_length=20, unique=True, null=True, blank=True, default=None)
     national_id_number = models.CharField(max_length=50, blank=True, null=True)
     location = models.CharField(max_length=100, blank=True)
     profile_picture = models.URLField(blank=True, null=True)
 
     email_verified = models.BooleanField(default=False)
     phone_verified = models.BooleanField(default=False)
+    phone_verified_at = models.DateTimeField(null=True, blank=True)
 
     VERIFICATION_CHOICES = [
         ("unverified", "Unverified"),
@@ -27,6 +29,17 @@ class User(AbstractUser):
 
     blnk_wallet_balance_id = models.CharField(max_length=100, blank=True, null=True)
     blnk_ledger_id = models.CharField(max_length=100, blank=True, null=True)
+
+    google_id = models.CharField(max_length=255, blank=True, null=True, unique=True)
+
+    @property
+    def is_trading_eligible(self):
+        return (
+            self.is_active
+            and self.email_verified
+            and self.phone_verified
+            and self.verification_status == "verified"
+        )
 
     def __str__(self):
         return self.username
@@ -174,3 +187,83 @@ class Transfer(models.Model):
 
     def __str__(self):
         return f"Transfer {self.reference}: {self.sender.username} -> {self.recipient.username} ({self.amount} {self.currency})"
+
+
+class EmailVerificationToken(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="email_tokens")
+    token_hash = models.CharField(max_length=128, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    used = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Email token for {self.user.email} (used={self.used})"
+
+
+class PasswordResetToken(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="password_tokens")
+    token_hash = models.CharField(max_length=128, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    used = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Password token for {self.user.email} (used={self.used})"
+
+
+class PhoneOTP(models.Model):
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("verified", "Verified"),
+        ("expired", "Expired"),
+        ("failed", "Failed"),
+        ("superseded", "Superseded"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="phone_otps", null=True, blank=True)
+    phone_number = models.CharField(max_length=30, db_index=True)
+    otp_hash = models.CharField(max_length=128)
+    attempts = models.IntegerField(default=0)
+    send_count = models.IntegerField(default=1)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending", db_index=True)
+    provider_batch_id = models.CharField(max_length=100, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_sent_at = models.DateTimeField(default=timezone.now)
+    expires_at = models.DateTimeField()
+    verified_at = models.DateTimeField(null=True, blank=True)
+    used = models.BooleanField(default=False)
+    purpose = models.CharField(max_length=30, default="phone_verification")
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"OTP for {self.phone_number} (status={self.status})"
+
+
+class UserSession(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="sessions")
+    session_key = models.UUIDField(default=uuid.uuid4, unique=True, db_index=True)
+    current_jti = models.CharField(max_length=255, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_activity = models.DateTimeField(auto_now=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.CharField(max_length=500, blank=True, default="")
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Session {self.session_key} for {self.user.username} (active={self.is_active})"

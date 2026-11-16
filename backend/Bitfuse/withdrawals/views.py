@@ -2,6 +2,8 @@ from django.shortcuts import get_object_or_404
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from accounts.recaptcha import get_client_ip, verify_recaptcha
+from Bitfuse.throttling import ConfigurableScopedRateThrottle
 
 from .models import Withdrawal
 from .serializers import (
@@ -82,6 +84,8 @@ class WithdrawalListCreateView(APIView):
     GET /api/v1/withdrawals/ - List current user's withdrawals.
     """
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ConfigurableScopedRateThrottle]
+    throttle_scope = "financial"
 
     def get(self, request, *args, **kwargs):
         # List user's withdrawals
@@ -91,6 +95,14 @@ class WithdrawalListCreateView(APIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def post(self, request, *args, **kwargs):
+        recaptcha_token = request.data.get("recaptcha_token")
+        verify_recaptcha(
+            recaptcha_token,
+            expected_action="withdraw",
+            is_financial=True,
+            request_ip=get_client_ip(request),
+        )
+
         check_kyc_status(request.user)
         serializer = CreateWithdrawalSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
