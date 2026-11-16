@@ -4,6 +4,7 @@ from rest_framework.generics import get_object_or_404
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from accounts.email_notifications import notify_admin
 from accounts.models import Rate
 from .models import Order
 from .payment_methods import payment_methods
@@ -39,6 +40,15 @@ def _error(exc):
     return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
 
+def _notify_order_created(order):
+    notify_admin(
+        f"New {order.order_type} trade order",
+        f"A {order.order_type} trade order was created by {order.user.username} "
+        f"(user ID: {order.user_id}). Reference: {order.reference_number}. "
+        f"Amount: {order.usdt_amount} USDT. Status: {order.status}.",
+    )
+
+
 class CreateBuyOrderView(generics.CreateAPIView):
     serializer_class = CreateBuyOrderSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -47,6 +57,7 @@ class CreateBuyOrderView(generics.CreateAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         order = serializer.save()
+        _notify_order_created(order)
         return Response(OrderSerializer(order).data, status=status.HTTP_201_CREATED)
 
     def post(self, request, *args, **kwargs):
@@ -62,6 +73,7 @@ class CreateSellOrderView(generics.CreateAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         order = serializer.save()
+        _notify_order_created(order)
         return Response(OrderSerializer(order).data, status=status.HTTP_201_CREATED)
 
     def post(self, request, *args, **kwargs):

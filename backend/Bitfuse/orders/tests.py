@@ -79,6 +79,33 @@ class BuyPaymentFlowTests(TestCase):
         self.assertIsNotNone(order.expires_at)
         self.assertEqual(order.status, Order.AWAITING_PAYMENT)
 
+    @mock.patch("accounts.email_notifications.send_mail")
+    def test_buy_order_sends_admin_notification(self, send_mail):
+        with self.captureOnCommitCallbacks(execute=True):
+            order = self.create_order()
+
+        send_mail.assert_called_once()
+        self.assertEqual(send_mail.call_args.args[3], ["maathmphepo80@gmail.com"])
+        self.assertIn(order.reference_number, send_mail.call_args.args[1])
+        self.assertIn("buy", send_mail.call_args.args[0])
+
+    @mock.patch("accounts.email_notifications.send_mail")
+    @mock.patch("orders.serializers.lock_sell_order")
+    @mock.patch("orders.serializers.fetch_wallet_balance", return_value={"USDT": Decimal("100")})
+    def test_sell_order_sends_admin_notification(self, _balance, _lock_order, send_mail):
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(
+                reverse("order-sell"),
+                {"amount_usdt": "20", "payment_method": "airtel_money"},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        send_mail.assert_called_once()
+        self.assertEqual(send_mail.call_args.args[3], ["maathmphepo80@gmail.com"])
+        self.assertIn(response.data["reference_number"], send_mail.call_args.args[1])
+        self.assertIn("sell", send_mail.call_args.args[0])
+
     def test_payment_instructions_expose_merchant_details(self):
         order = self.create_order()
         with self.settings(AIRTEL_MONEY_BUSINESS_CODE="123456"):

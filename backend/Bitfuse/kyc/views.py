@@ -5,6 +5,7 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from accounts.email_notifications import notify_admin
 from .models import KYCSubmission
 from .serializers import (
     KYCReviewSerializer,
@@ -72,6 +73,11 @@ class KYCSubmitView(generics.CreateAPIView):
             existing.reviewed_at = None
             existing.reviewed_by = None
             existing.save()
+            notify_admin(
+                "KYC submission received",
+                f"A KYC submission was received from {request.user.username} "
+                f"(user ID: {request.user.pk}). Submission ID: {existing.pk}.",
+            )
             return Response(
                 KYCSubmissionSerializer(existing).data,
                 status=status.HTTP_200_OK,
@@ -81,6 +87,11 @@ class KYCSubmitView(generics.CreateAPIView):
         submission = serializer.save(
             user=request.user,
             status="pending",
+        )
+        notify_admin(
+            "KYC submission received",
+            f"A KYC submission was received from {request.user.username} "
+            f"(user ID: {request.user.pk}). Submission ID: {submission.pk}.",
         )
         return Response(
             KYCSubmissionSerializer(submission).data,
