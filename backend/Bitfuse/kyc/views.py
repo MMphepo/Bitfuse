@@ -297,44 +297,16 @@ class KYCSubmitView(generics.CreateAPIView):
             request_ip=get_client_ip(request),
         )
 
-        # Debug
-        print("=" * 60)
-        print("[KYC DEBUG] Request user:", request.user,
-              "(authenticated:", request.user.is_authenticated, ")")
-        print("[KYC DEBUG] Content-Type:",
-              request.META.get("CONTENT_TYPE", "(none)"))
-        print("[KYC DEBUG] request.data keys:", list(request.data.keys()))
-        print("[KYC DEBUG] request.FILES keys:", list(request.FILES.keys()))
-        for key in ["id_front", "id_back", "selfie"]:
-            f = request.FILES.get(key)
-            if f:
-                print(
-                    f"[KYC DEBUG]   {key}: name={f.name}, size={f.size}, content_type={f.content_type}")
-            else:
-                print(
-                    f"[KYC DEBUG]   {key}: NOT PRESENT in request.FILES")
-            d = request.data.get(key)
-            if d and key not in request.FILES:
-                print(
-                    f"[KYC DEBUG]   {key} found in request.data (type={type(d).__name__}) but NOT in FILES")
-        print("-" * 60)
-
         # Prevent duplicate submissions
         existing = KYCSubmission.objects.filter(user=request.user).first()
         if existing and existing.status == "pending":
-            print("[KYC DEBUG] Duplicate pending submission detected, returning 400")
             return Response(
                 {"detail": "You already have a KYC submission under review."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         serializer = self.get_serializer(data=request.data)
-        try:
-            serializer.is_valid(raise_exception=True)
-        except Exception:
-            print("[KYC DEBUG] Serializer errors:", serializer.errors)
-            print("=" * 60)
-            raise
+        serializer.is_valid(raise_exception=True)
 
         # If there's a previous rejected submission, update it instead
         if existing:
