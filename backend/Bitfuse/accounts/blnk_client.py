@@ -125,6 +125,7 @@ class BlnkClient:
         source: str,
         destination: str,
         description: str = "",
+        skip_queue: bool = False,
     ):
         logger.debug(
             f"[BLNK] Creating transaction: reference={reference!r}, amount={amount!r}, "
@@ -141,6 +142,7 @@ class BlnkClient:
                 "source": source,
                 "destination": destination,
                 "description": description,
+                "skip_queue": skip_queue,
             },
         )
 

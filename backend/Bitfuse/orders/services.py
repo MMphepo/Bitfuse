@@ -450,6 +450,7 @@ def _submit_buy_settlement_legs(client, locked, platform, usdt_wallet, settlemen
         source=platform.mwk_external_contra_id,
         destination=platform.mwk_float_balance_id,
         description=f"Mobile money payment received for order {locked.reference_number}",
+        skip_queue=True,
     )
     txn1_id = txn1.get("transaction_id")
     if not txn1_id:
@@ -469,6 +470,7 @@ def _submit_buy_settlement_legs(client, locked, platform, usdt_wallet, settlemen
         source=platform.usdt_float_balance_id,
         destination=usdt_wallet.blnk_balance_id,
         description=f"USDT released for order {locked.reference_number}",
+        skip_queue=True,
     )
     txn2_id = txn2.get("transaction_id")
     if not txn2_id:

@@ -918,6 +918,29 @@ class BlnkRepairTests(TestCase):
             client = BlnkClient()
             self.assertEqual(client.headers.get("X-Blnk-Key"), "test_api_key_64_chars_long_1234567890_abcdefghijklmnopqrstuvwxyz")
 
+    @mock.patch("accounts.blnk_client.requests.request")
+    def test_create_transaction_can_request_synchronous_processing(self, mock_request):
+        response = mock.MagicMock()
+        response.status_code = 201
+        response.content = b'{"transaction_id":"txn-sync","status":"APPLIED"}'
+        response.json.return_value = {"transaction_id": "txn-sync", "status": "APPLIED"}
+        response.raise_for_status.return_value = None
+        mock_request.return_value = response
+
+        from accounts.blnk_client import BlnkClient
+        client = BlnkClient()
+        client.create_transaction(
+            amount=100,
+            currency="USDT",
+            precision=1000000,
+            reference="test-sync-credit",
+            source="platform-usdt-float",
+            destination="user-usdt-wallet",
+            skip_queue=True,
+        )
+
+        self.assertTrue(mock_request.call_args.kwargs["json"]["skip_queue"])
+
     def test_blnk_secret_key_not_required(self):
         from accounts.blnk_client import BlnkClient
         with override_settings(BLNK_API_KEY="my_api_key"):

@@ -243,6 +243,13 @@ class BuyPaymentFlowTests(TestCase):
         self.assertTrue(
             OrderAuditLog.objects.filter(order=order, action="settled").exists()
         )
+        self.assertTrue(
+            all(call.kwargs["skip_queue"] for call in self.blnk.return_value.create_transaction.call_args_list)
+        )
+        self.assertEqual(
+            self.blnk.return_value.create_transaction.call_args_list[1].kwargs["destination"],
+            Wallet.objects.get(user=self.user, currency="USDT").blnk_balance_id,
+        )
 
     def test_wrong_amount_goes_to_mismatch_rather_than_crediting(self):
         order = self.create_order()
