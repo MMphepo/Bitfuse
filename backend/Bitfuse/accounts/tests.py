@@ -1,12 +1,17 @@
 import threading
+import uuid
 import requests
 from decimal import Decimal
 from unittest import mock
 from io import StringIO
 from django.conf import settings
+from django.core import mail
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
+from django.utils import timezone
+from django.utils.encoding import force_bytes
+from django.utils.http import urlsafe_base64_encode
 from rest_framework.test import APIClient
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
@@ -473,12 +478,15 @@ class AuthVerificationTests(TestCase):
 class PasswordResetTests(TestCase):
     def setUp(self):
         cache.clear()
+        mail.outbox = []
         self.client = APIClient()
         self.user = User.objects.create_user(
             username="resetuser",
             email="reset@example.com",
             phone_number="+265999222333",
             password="OldPassword123!",
+            first_name="Reset",
+            last_name="User",
         )
 
     def test_password_reset_flow(self):
@@ -500,10 +508,166 @@ class PasswordResetTests(TestCase):
         self.user.refresh_from_db()
         self.assertTrue(self.user.check_password("NewStrongPassword123!"))
 
+    def test_password_reset_email_content_and_url_formatting(self):
+        req_resp = self.client.post(
+            "/api/v1/auth/password-reset/",
+            {"email": "reset@example.com", "recaptcha_token": "test-token"},
+            format="json",
+        )
+        self.assertEqual(req_resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(mail.outbox), 1)
+
+        sent_email = mail.outbox[0]
+        self.assertEqual(sent_email.subject, "Reset Your BitFuse Password")
+        self.assertEqual(sent_email.to, ["reset@example.com"])
+
+        # Verify body contains frontend URL and uid parameter
+        uidb64 = urlsafe_base64_encode(force_bytes(self.user.id))
+        expected_url_prefix = f"https://bitfuse.mw/reset-password?uid={uidb64}&token="
+        self.assertIn(expected_url_prefix, sent_email.body)
+
+        # Verify HTML alternative exists and contains Reset Password button
+        self.assertEqual(len(sent_email.alternatives), 1)
+        html_content, mimetype = sent_email.alternatives[0]
+        self.assertEqual(mimetype, "text/html")
+        self.assertIn("Reset Your Password", html_content)
+        self.assertIn("Reset Password", html_content)
+        self.assertIn(expected_url_prefix, html_content)
+
     def test_unknown_email_generic_response(self):
         req_resp = self.client.post("/api/v1/auth/password-reset/", {"email": "unknown@example.com", "recaptcha_token": "test-token"}, format="json")
         self.assertEqual(req_resp.status_code, status.HTTP_200_OK)
         self.assertIn("password reset instructions have been sent", req_resp.data["message"])
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_password_reset_confirm_with_uid_and_confirm_password(self):
+        raw_token = EmailService.send_password_reset_email("reset@example.com")
+        uidb64 = urlsafe_base64_encode(force_bytes(self.user.id))
+
+        confirm_resp = self.client.post(
+            "/api/v1/auth/password-reset/confirm/",
+            {
+                "uid": uidb64,
+                "token": raw_token,
+                "new_password": "NewStrongPassword123!",
+                "confirm_password": "NewStrongPassword123!",
+            },
+            format="json",
+        )
+        self.assertEqual(confirm_resp.status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("NewStrongPassword123!"))
+
+    def test_password_reset_invalid_or_expired_token(self):
+        # Invalid token
+        resp_invalid = self.client.post(
+            "/api/v1/auth/password-reset/confirm/",
+            {
+                "token": "invalid_token_string",
+                "new_password": "NewStrongPassword123!",
+                "confirm_password": "NewStrongPassword123!",
+            },
+            format="json",
+        )
+        self.assertEqual(resp_invalid.status_code, status.HTTP_400_BAD_REQUEST)
+
+        # Expired token
+        raw_token = EmailService.send_password_reset_email("reset@example.com")
+        token_hash = EmailService._hash_token(raw_token)
+        PasswordResetToken.objects.filter(token_hash=token_hash).update(
+            expires_at=timezone.now() - timedelta(minutes=5)
+        )
+
+        resp_expired = self.client.post(
+            "/api/v1/auth/password-reset/confirm/",
+            {
+                "token": raw_token,
+                "new_password": "NewStrongPassword123!",
+                "confirm_password": "NewStrongPassword123!",
+            },
+            format="json",
+        )
+        self.assertEqual(resp_expired.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_password_reset_token_reuse_rejected(self):
+        raw_token = EmailService.send_password_reset_email("reset@example.com")
+
+        # First use succeeds
+        resp1 = self.client.post(
+            "/api/v1/auth/password-reset/confirm/",
+            {
+                "token": raw_token,
+                "new_password": "NewStrongPassword123!",
+                "confirm_password": "NewStrongPassword123!",
+            },
+            format="json",
+        )
+        self.assertEqual(resp1.status_code, status.HTTP_200_OK)
+
+        # Second use is rejected
+        resp2 = self.client.post(
+            "/api/v1/auth/password-reset/confirm/",
+            {
+                "token": raw_token,
+                "new_password": "AnotherNewPassword123!",
+                "confirm_password": "AnotherNewPassword123!",
+            },
+            format="json",
+        )
+        self.assertEqual(resp2.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_password_reset_password_mismatch_and_weak_password(self):
+        raw_token = EmailService.send_password_reset_email("reset@example.com")
+
+        # Mismatch
+        resp_mismatch = self.client.post(
+            "/api/v1/auth/password-reset/confirm/",
+            {
+                "token": raw_token,
+                "new_password": "NewStrongPassword123!",
+                "confirm_password": "MismatchedPassword123!",
+            },
+            format="json",
+        )
+        self.assertEqual(resp_mismatch.status_code, status.HTTP_400_BAD_REQUEST)
+
+        # Weak password
+        resp_weak = self.client.post(
+            "/api/v1/auth/password-reset/confirm/",
+            {
+                "token": raw_token,
+                "new_password": "123",
+                "confirm_password": "123",
+            },
+            format="json",
+        )
+        self.assertEqual(resp_weak.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_password_reset_revokes_active_user_sessions(self):
+        # Create active session for user
+        session = UserSession.objects.create(
+            user=self.user,
+            session_key=uuid.uuid4(),
+            current_jti="test_jti_123",
+            is_active=True,
+        )
+        self.assertTrue(session.is_active)
+
+        raw_token = EmailService.send_password_reset_email("reset@example.com")
+        confirm_resp = self.client.post(
+            "/api/v1/auth/password-reset/confirm/",
+            {
+                "token": raw_token,
+                "new_password": "NewStrongPassword123!",
+                "confirm_password": "NewStrongPassword123!",
+            },
+            format="json",
+        )
+        self.assertEqual(confirm_resp.status_code, status.HTTP_200_OK)
+
+        session.refresh_from_db()
+        self.assertFalse(session.is_active)
+        self.assertIsNotNone(session.revoked_at)
 
 
 class GoogleAuthTests(TestCase):

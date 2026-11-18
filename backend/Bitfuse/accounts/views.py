@@ -356,27 +356,34 @@ class PasswordResetConfirmView(APIView):
 
     def post(self, request):
         token = request.data.get("token")
-        new_password = request.data.get("new_password")
-        password_confirmation = request.data.get("password_confirmation")
+        uid = request.data.get("uid") or request.data.get("uidb64")
+        new_password = request.data.get("new_password") or request.data.get("password")
+        password_confirmation = request.data.get("confirm_password") or request.data.get("password_confirmation")
 
-        if not token or not new_password or not password_confirmation:
-            raise ValidationError(
-                {
-                    "token": ["Reset token is required."] if not token else [],
-                    "new_password": ["New password is required."] if not new_password else [],
-                    "password_confirmation": ["Password confirmation is required."] if not password_confirmation else [],
-                }
-            )
+        errors = {}
+        if not token:
+            errors["token"] = ["Reset token is required."]
+        if not new_password:
+            errors["new_password"] = ["New password is required."]
+        if not password_confirmation:
+            errors["password_confirmation"] = ["Password confirmation is required."]
+            errors["confirm_password"] = ["Password confirmation is required."]
+
+        if errors:
+            raise ValidationError(errors)
 
         if new_password != password_confirmation:
-            raise ValidationError({"password_confirmation": ["Passwords do not match."]})
+            raise ValidationError({
+                "password_confirmation": ["Passwords do not match."],
+                "confirm_password": ["Passwords do not match."],
+            })
 
         try:
             validate_password(new_password)
         except DjangoValidationError as exc:
             raise ValidationError({"new_password": list(exc.messages)})
 
-        user = EmailService.confirm_password_reset(token, new_password)
+        user = EmailService.confirm_password_reset(raw_token=token, new_password=new_password, uid=uid)
 
         return Response(
             {
