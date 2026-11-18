@@ -18,6 +18,10 @@ logger = logging.getLogger(__name__)
 BALANCE_CACHE_TTL = 45  # 45 seconds short-term cache TTL
 
 
+class BlnkReferenceError(RuntimeError):
+    """A stored Bitfuse ledger or balance ID is missing from Blnk."""
+
+
 def invalidate_wallet_balance_cache(user_id) -> None:
     """Invalidate cached wallet balance for a user after a financial mutation."""
     cache_key = f"wallet_balance:{user_id}"
@@ -26,79 +30,51 @@ def invalidate_wallet_balance_cache(user_id) -> None:
 
 
 def ensure_user_wallets(user: User) -> tuple[Wallet, Wallet]:
-    """Lazily create or reconcile the user's Blnk ledger + MWK/USDT wallets.
-
-    Validates stored references against Blnk:
-    - If user.blnk_ledger_id is missing or returns 404 in Blnk, a replacement ledger is created.
-    - If Wallet.blnk_balance_id is missing or returns 404 in Blnk, a replacement balance is created under the user's valid ledger.
-    - If Blnk is unreachable (timeout/5xx/connection error), errors propagate without recreating references.
-
-    Returns (mwk_wallet, usdt_wallet).
-    """
+    """Provision missing first-time wallets and fail closed on stale references."""
     client = BlnkClient()
-    repaired_any = False
-
-    # 1. Validate / Create user ledger
-    ledger_recreated = False
+    mwk_wallet = Wallet.objects.filter(user=user, currency="MWK").first()
+    usdt_wallet = Wallet.objects.filter(user=user, currency="USDT").first()
     ledger_id = user.blnk_ledger_id
-    if not ledger_id or not client.ledger_exists(ledger_id):
-        if ledger_id:
-            logger.warning(f"[BLNK_LEDGER_STALE] User {user.username} (id={user.id}) ledger {ledger_id} not found in Blnk. Recreating...")
-        else:
-            logger.info(f"[BLNK_LEDGER_CREATE] Creating Blnk ledger for user {user.username} (id={user.id}).")
-
+    if ledger_id:
+        if not client.ledger_exists(ledger_id):
+            raise BlnkReferenceError(
+                f"User {user.username} (id={user.id}) references missing Blnk ledger {ledger_id}."
+            )
+    elif mwk_wallet or usdt_wallet:
+        raise BlnkReferenceError(
+            f"User {user.username} (id={user.id}) has wallet records but no Blnk ledger ID."
+        )
+    else:
         ledger = client.create_ledger(f"Bitfuse User — {user.username}", {"user_id": str(user.id)})
-        ledger_id = ledger["ledger_id"]
+        ledger_id = ledger.get("ledger_id")
+        if not ledger_id:
+            raise RuntimeError("Blnk did not return a ledger ID when provisioning a user.")
         user.blnk_ledger_id = ledger_id
         user.save(update_fields=["blnk_ledger_id"])
-        logger.info(f"[BLNK_LEDGER_REPAIRED] User {user.username} ledger set to {ledger_id}")
-        repaired_any = True
-        ledger_recreated = True
+        logger.info(f"[BLNK_LEDGER_CREATED] User {user.username} ledger set to {ledger_id}")
 
-    # 2. Validate / Create MWK wallet balance
-    mwk_wallet = Wallet.objects.filter(user=user, currency="MWK").first()
-    mwk_balance_valid = False
-    if not ledger_recreated and mwk_wallet and mwk_wallet.blnk_balance_id:
-        mwk_balance_valid = client.balance_exists(mwk_wallet.blnk_balance_id)
+    for currency, wallet in (("MWK", mwk_wallet), ("USDT", usdt_wallet)):
+        if wallet:
+            if not wallet.blnk_balance_id or not client.balance_exists(wallet.blnk_balance_id):
+                raise BlnkReferenceError(
+                    f"User {user.username} {currency} wallet references missing Blnk balance "
+                    f"{wallet.blnk_balance_id or '(empty ID)'}."
+                )
+            continue
 
-    if not mwk_balance_valid:
-        if mwk_wallet and mwk_wallet.blnk_balance_id:
-            logger.warning(f"[BLNK_BALANCE_STALE] User {user.username} MWK balance {mwk_wallet.blnk_balance_id} not found in Blnk. Recreating...")
-        balance = client.create_balance(ledger_id, "MWK", {"user_id": str(user.id), "currency": "MWK"})
-        new_balance_id = balance["balance_id"]
-
-        if mwk_wallet:
-            mwk_wallet.blnk_balance_id = new_balance_id
-            mwk_wallet.save(update_fields=["blnk_balance_id"])
-            logger.info(f"[BLNK_BALANCE_REPAIRED] Updated existing MWK Wallet record for {user.username} with {new_balance_id}")
-        else:
-            mwk_wallet = Wallet.objects.create(user=user, currency="MWK", blnk_balance_id=new_balance_id)
-            logger.info(f"[BLNK_BALANCE_CREATED] Created MWK Wallet record for {user.username} with {new_balance_id}")
-        repaired_any = True
-
-    # 3. Validate / Create USDT wallet balance
-    usdt_wallet = Wallet.objects.filter(user=user, currency="USDT").first()
-    usdt_balance_valid = False
-    if not ledger_recreated and usdt_wallet and usdt_wallet.blnk_balance_id:
-        usdt_balance_valid = client.balance_exists(usdt_wallet.blnk_balance_id)
-
-    if not usdt_balance_valid:
-        if usdt_wallet and usdt_wallet.blnk_balance_id:
-            logger.warning(f"[BLNK_BALANCE_STALE] User {user.username} USDT balance {usdt_wallet.blnk_balance_id} not found in Blnk. Recreating...")
-        balance = client.create_balance(ledger_id, "USDT", {"user_id": str(user.id), "currency": "USDT"})
-        new_balance_id = balance["balance_id"]
-
-        if usdt_wallet:
-            usdt_wallet.blnk_balance_id = new_balance_id
-            usdt_wallet.save(update_fields=["blnk_balance_id"])
-            logger.info(f"[BLNK_BALANCE_REPAIRED] Updated existing USDT Wallet record for {user.username} with {new_balance_id}")
-        else:
-            usdt_wallet = Wallet.objects.create(user=user, currency="USDT", blnk_balance_id=new_balance_id)
-            logger.info(f"[BLNK_BALANCE_CREATED] Created USDT Wallet record for {user.username} with {new_balance_id}")
-        repaired_any = True
-
-    if repaired_any:
+        balance = client.create_balance(
+            ledger_id, currency, {"user_id": str(user.id), "currency": currency}
+        )
+        balance_id = balance.get("balance_id")
+        if not balance_id:
+            raise RuntimeError(f"Blnk did not return a {currency} balance ID when provisioning a user.")
+        wallet = Wallet.objects.create(user=user, currency=currency, blnk_balance_id=balance_id)
+        logger.info(f"[BLNK_BALANCE_CREATED] Created {currency} Wallet record for {user.username} with {balance_id}")
         invalidate_wallet_balance_cache(user.id)
+        if currency == "MWK":
+            mwk_wallet = wallet
+        else:
+            usdt_wallet = wallet
 
     return mwk_wallet, usdt_wallet
 
@@ -200,84 +176,69 @@ def fetch_wallet_balance(user: User) -> dict:
 
 
 def ensure_frozen_balance() -> PlatformAccount:
-    """Ensure the platform's USDT frozen/escrow balance exists and is valid in Blnk."""
-    return get_or_create_platform_account()
+    """Return the validated platform balances used for frozen/escrow operations."""
+    return get_platform_account()
+
+
+def _validate_platform_account(platform: PlatformAccount, client) -> PlatformAccount:
+    if not platform.ledger_id or not client.ledger_exists(platform.ledger_id):
+        raise BlnkReferenceError(
+            f"Platform account references missing Blnk ledger {platform.ledger_id or '(empty ID)'}."
+        )
+
+    for field, label in (
+        ("mwk_float_balance_id", "MWK float"),
+        ("usdt_float_balance_id", "USDT float"),
+        ("mwk_external_contra_id", "MWK external contra"),
+        ("usdt_external_contra_id", "USDT external contra"),
+        ("usdt_frozen_balance_id", "USDT frozen"),
+    ):
+        balance_id = getattr(platform, field)
+        if not balance_id or not client.balance_exists(balance_id):
+            raise BlnkReferenceError(
+                f"Platform {label} references missing Blnk balance {balance_id or '(empty ID)'}."
+            )
+    return platform
+
+
+def get_platform_account(client=None) -> PlatformAccount:
+    """Fetch and validate existing platform references without repairing them."""
+    client = client or BlnkClient()
+    platform = PlatformAccount.objects.first()
+    if platform:
+        return _validate_platform_account(platform, client)
+    raise BlnkReferenceError("PlatformAccount is not initialized. Run: python manage.py init_platform_account")
+
+
+def _create_platform_balance(client, ledger_id, currency, role):
+    response = client.create_balance(ledger_id, currency, {"role": role})
+    balance_id = response.get("balance_id")
+    if not balance_id:
+        raise RuntimeError(f"Blnk did not return a balance ID for platform role {role}.")
+    return balance_id
 
 
 @db_transaction.atomic
 def get_or_create_platform_account(client=None) -> PlatformAccount:
-    """Idempotently fetch or reconcile the PlatformAccount ledger and balance mapping.
+    """Provision the platform account only when no local mapping exists.
 
-    Checks existence in Blnk:
-    - If platform ledger 404s, recreates ledger and all balances.
-    - If ledger exists but individual balances 404, recreates missing balances under platform ledger.
-    - Updates existing PlatformAccount row in-place without creating duplicate rows.
+    Existing mappings are validated and never replaced automatically.
     """
-    if not client:
-        client = BlnkClient()
-
+    client = client or BlnkClient()
     platform = PlatformAccount.objects.select_for_update().first()
-
     if platform:
-        # Check if platform ledger exists
-        if not platform.ledger_id or not client.ledger_exists(platform.ledger_id):
-            logger.warning(f"[BLNK_LEDGER_STALE] Platform ledger '{platform.ledger_id}' missing or returned 404 in Blnk. Recreating...")
-            ledger = client.create_ledger("Bitfuse Platform Account")
-            platform.ledger_id = ledger["ledger_id"]
+        return _validate_platform_account(platform, client)
 
-            platform.mwk_float_balance_id = client.create_balance(platform.ledger_id, "MWK", {"role": "platform_mwk_float"})["balance_id"]
-            platform.usdt_float_balance_id = client.create_balance(platform.ledger_id, "USDT", {"role": "platform_usdt_float"})["balance_id"]
-            platform.mwk_external_contra_id = client.create_balance(platform.ledger_id, "MWK", {"role": "external_mwk_contra"})["balance_id"]
-            platform.usdt_external_contra_id = client.create_balance(platform.ledger_id, "USDT", {"role": "external_usdt_contra"})["balance_id"]
-            platform.usdt_frozen_balance_id = client.create_balance(platform.ledger_id, "USDT", {"role": "platform_usdt_frozen"})["balance_id"]
-
-            platform.save()
-            logger.info(f"[BLNK_LEDGER_REPAIRED] Recreated platform account ledger and all balances: ledger={platform.ledger_id}")
-            return platform
-
-        # Ledger exists, validate individual balances
-        fields_to_update = []
-
-        if not platform.mwk_float_balance_id or not client.balance_exists(platform.mwk_float_balance_id):
-            logger.warning(f"[BLNK_BALANCE_STALE] Platform MWK float balance '{platform.mwk_float_balance_id}' stale/missing. Recreating...")
-            platform.mwk_float_balance_id = client.create_balance(platform.ledger_id, "MWK", {"role": "platform_mwk_float"})["balance_id"]
-            fields_to_update.append("mwk_float_balance_id")
-
-        if not platform.usdt_float_balance_id or not client.balance_exists(platform.usdt_float_balance_id):
-            logger.warning(f"[BLNK_BALANCE_STALE] Platform USDT float balance '{platform.usdt_float_balance_id}' stale/missing. Recreating...")
-            platform.usdt_float_balance_id = client.create_balance(platform.ledger_id, "USDT", {"role": "platform_usdt_float"})["balance_id"]
-            fields_to_update.append("usdt_float_balance_id")
-
-        if not platform.mwk_external_contra_id or not client.balance_exists(platform.mwk_external_contra_id):
-            logger.warning(f"[BLNK_BALANCE_STALE] Platform MWK contra balance '{platform.mwk_external_contra_id}' stale/missing. Recreating...")
-            platform.mwk_external_contra_id = client.create_balance(platform.ledger_id, "MWK", {"role": "external_mwk_contra"})["balance_id"]
-            fields_to_update.append("mwk_external_contra_id")
-
-        if not platform.usdt_external_contra_id or not client.balance_exists(platform.usdt_external_contra_id):
-            logger.warning(f"[BLNK_BALANCE_STALE] Platform USDT contra balance '{platform.usdt_external_contra_id}' stale/missing. Recreating...")
-            platform.usdt_external_contra_id = client.create_balance(platform.ledger_id, "USDT", {"role": "external_usdt_contra"})["balance_id"]
-            fields_to_update.append("usdt_external_contra_id")
-
-        if not platform.usdt_frozen_balance_id or not client.balance_exists(platform.usdt_frozen_balance_id):
-            logger.warning(f"[BLNK_BALANCE_STALE] Platform USDT frozen balance '{platform.usdt_frozen_balance_id}' stale/missing. Recreating...")
-            platform.usdt_frozen_balance_id = client.create_balance(platform.ledger_id, "USDT", {"role": "platform_usdt_frozen"})["balance_id"]
-            fields_to_update.append("usdt_frozen_balance_id")
-
-        if fields_to_update:
-            platform.save(update_fields=fields_to_update)
-            logger.info(f"[BLNK_BALANCE_REPAIRED] Updated PlatformAccount fields: {fields_to_update}")
-
-        return platform
-
-    # PlatformAccount does not exist in Django DB
     ledger = client.create_ledger("Bitfuse Platform Account")
-    ledger_id = ledger["ledger_id"]
+    ledger_id = ledger.get("ledger_id")
+    if not ledger_id:
+        raise RuntimeError("Blnk did not return a ledger ID when provisioning the platform account.")
 
-    mwk_float_id = client.create_balance(ledger_id, "MWK", {"role": "platform_mwk_float"})["balance_id"]
-    usdt_float_id = client.create_balance(ledger_id, "USDT", {"role": "platform_usdt_float"})["balance_id"]
-    mwk_contra_id = client.create_balance(ledger_id, "MWK", {"role": "external_mwk_contra"})["balance_id"]
-    usdt_contra_id = client.create_balance(ledger_id, "USDT", {"role": "external_usdt_contra"})["balance_id"]
-    usdt_frozen_id = client.create_balance(ledger_id, "USDT", {"role": "platform_usdt_frozen"})["balance_id"]
+    mwk_float_id = _create_platform_balance(client, ledger_id, "MWK", "platform_mwk_float")
+    usdt_float_id = _create_platform_balance(client, ledger_id, "USDT", "platform_usdt_float")
+    mwk_contra_id = _create_platform_balance(client, ledger_id, "MWK", "external_mwk_contra")
+    usdt_contra_id = _create_platform_balance(client, ledger_id, "USDT", "external_usdt_contra")
+    usdt_frozen_id = _create_platform_balance(client, ledger_id, "USDT", "platform_usdt_frozen")
 
     platform = PlatformAccount.objects.create(
         ledger_id=ledger_id,

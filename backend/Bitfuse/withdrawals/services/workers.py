@@ -6,8 +6,7 @@ from django.conf import settings
 from decouple import config
 
 from accounts.blnk_client import BlnkClient
-from accounts.models import PlatformAccount
-from accounts.services import ensure_user_wallets, invalidate_wallet_balance_cache
+from accounts.services import ensure_user_wallets, get_platform_account, invalidate_wallet_balance_cache
 from withdrawals.models import Withdrawal, DepositRecord, WithdrawalNetworkConfig
 from withdrawals.services.blockchain import get_blockchain_provider
 from withdrawals.services.blockchain.bsc import BscProvider, to_checksum_address
@@ -89,12 +88,9 @@ def process_bsc_deposit_event(event_data: dict) -> DepositRecord:
 
         if confirmations >= confirmations_required and user and deposit.status != "CREDITED":
             # Credit Blnk user balance
-            platform = PlatformAccount.objects.first()
-            if not platform:
-                raise RuntimeError("PlatformAccount not found.")
-
             _, usdt_wallet = ensure_user_wallets(user)
             blnk_client = BlnkClient()
+            platform = get_platform_account(client=blnk_client)
             precision_usdt = settings.CURRENCY_PRECISION["USDT"]
             raw_amount = int(amount * precision_usdt)
 

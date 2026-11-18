@@ -12,7 +12,7 @@ from rest_framework import status
 from rest_framework.exceptions import ValidationError
 
 from accounts.models import EmailVerificationToken, PasswordResetToken, PhoneOTP, PlatformAccount, Wallet
-from accounts.services import get_or_create_platform_account, ensure_user_wallets
+from accounts.services import BlnkReferenceError, get_or_create_platform_account, ensure_user_wallets
 from accounts.auth_services import EmailService
 from orders.services import complete_buy_order, complete_sell_order
 
@@ -846,47 +846,40 @@ class BlnkRepairTests(TestCase):
         mock_client.create_ledger.assert_not_called()
         mock_client.create_balance.assert_not_called()
 
-    def test_stale_ledger_404_triggers_recreation(self):
+    def test_stale_ledger_404_fails_closed_without_replacing_references(self):
         mock_client = mock.MagicMock()
-        # Ledger 404s
         mock_client.ledger_exists.return_value = False
-        mock_client.create_ledger.return_value = {"ledger_id": "ldg_repaired_new"}
-        mock_client.create_balance.side_effect = lambda ledger_id, curr, meta: {
-            "balance_id": f"bal_{curr.lower()}_repaired_new"
-        }
 
         with mock.patch("accounts.services.BlnkClient", return_value=mock_client):
-            mwk_w, usdt_w = ensure_user_wallets(self.user)
+            with self.assertRaises(BlnkReferenceError):
+                ensure_user_wallets(self.user)
 
         self.user.refresh_from_db()
-        self.assertEqual(self.user.blnk_ledger_id, "ldg_repaired_new")
-        self.assertEqual(mwk_w.blnk_balance_id, "bal_mwk_repaired_new")
-        self.assertEqual(usdt_w.blnk_balance_id, "bal_usdt_repaired_new")
-        # Ensure no duplicate Wallet rows created
+        self.assertEqual(self.user.blnk_ledger_id, "ldg_existing_valid")
+        self.assertEqual(self.mwk_wallet.blnk_balance_id, "bal_mwk_existing_valid")
+        self.assertEqual(self.usdt_wallet.blnk_balance_id, "bal_usdt_existing_valid")
         self.assertEqual(Wallet.objects.filter(user=self.user).count(), 2)
+        mock_client.create_ledger.assert_not_called()
+        mock_client.create_balance.assert_not_called()
 
-    def test_stale_balance_404_triggers_balance_recreation_only(self):
+    def test_stale_balance_404_fails_closed_without_replacing_reference(self):
         mock_client = mock.MagicMock()
-        # Ledger exists
         mock_client.ledger_exists.return_value = True
-        # MWK balance exists, USDT balance 404s
         def balance_exists_side_effect(balance_id):
             return balance_id == "bal_mwk_existing_valid"
 
         mock_client.balance_exists.side_effect = balance_exists_side_effect
-        mock_client.create_balance.return_value = {"balance_id": "bal_usdt_repaired_fresh"}
 
         with mock.patch("accounts.services.BlnkClient", return_value=mock_client):
-            mwk_w, usdt_w = ensure_user_wallets(self.user)
+            with self.assertRaises(BlnkReferenceError):
+                ensure_user_wallets(self.user)
 
         self.user.refresh_from_db()
-        # Ledger untouched
         self.assertEqual(self.user.blnk_ledger_id, "ldg_existing_valid")
-        # MWK wallet untouched
-        self.assertEqual(mwk_w.blnk_balance_id, "bal_mwk_existing_valid")
-        # USDT wallet updated in-place
-        self.assertEqual(usdt_w.blnk_balance_id, "bal_usdt_repaired_fresh")
+        self.assertEqual(self.mwk_wallet.blnk_balance_id, "bal_mwk_existing_valid")
+        self.assertEqual(self.usdt_wallet.blnk_balance_id, "bal_usdt_existing_valid")
         self.assertEqual(Wallet.objects.filter(user=self.user).count(), 2)
+        mock_client.create_balance.assert_not_called()
 
     def test_blnk_503_outage_does_not_recreate(self):
         mock_client = mock.MagicMock()
@@ -987,7 +980,7 @@ class BlnkRepairTests(TestCase):
 
         self.assertEqual(Wallet.objects.filter(user=self.user).count(), 2)
 
-    def test_platform_account_stale_ledger_and_balance_repair(self):
+    def test_platform_account_stale_ledger_fails_closed_without_replacement(self):
         platform = PlatformAccount.objects.create(
             ledger_id="led_stale_old",
             mwk_float_balance_id="mwk_float_old",
@@ -998,38 +991,42 @@ class BlnkRepairTests(TestCase):
         )
 
         mock_client = mock.MagicMock()
-        # Ledger returns 404
         mock_client.ledger_exists.return_value = False
-        mock_client.create_ledger.return_value = {"ledger_id": "led_platform_repaired"}
-        mock_client.create_balance.side_effect = lambda l_id, curr, meta: {
-            "balance_id": f"bal_{meta.get('role')}_new"
-        }
+        with self.assertRaises(BlnkReferenceError):
+            get_or_create_platform_account(client=mock_client)
 
-        repaired_platform = get_or_create_platform_account(client=mock_client)
-
-        self.assertEqual(repaired_platform.id, platform.id)
-        self.assertEqual(repaired_platform.ledger_id, "led_platform_repaired")
-        self.assertEqual(repaired_platform.mwk_float_balance_id, "bal_platform_mwk_float_new")
+        platform.refresh_from_db()
+        self.assertEqual(platform.ledger_id, "led_stale_old")
+        self.assertEqual(platform.mwk_float_balance_id, "mwk_float_old")
         self.assertEqual(PlatformAccount.objects.count(), 1)
+        mock_client.create_ledger.assert_not_called()
+        mock_client.create_balance.assert_not_called()
 
     def test_reconcile_blnk_management_command_execution(self):
         out = StringIO()
+        platform = PlatformAccount.objects.create(
+            ledger_id="led-audited",
+            mwk_float_balance_id="mwk-float-audited",
+            usdt_float_balance_id="usdt-float-audited",
+            mwk_external_contra_id="mwk-contra-audited",
+            usdt_external_contra_id="usdt-contra-audited",
+            usdt_frozen_balance_id="usdt-frozen-audited",
+        )
 
         mock_client = mock.MagicMock()
         mock_client.ledger_exists.return_value = True
         mock_client.balance_exists.return_value = True
-        mock_client.create_ledger.return_value = {"ledger_id": "led_platform_repaired"}
-        mock_client.create_balance.side_effect = lambda l_id, curr, meta: {
-            "balance_id": f"bal_{meta.get('role', 'generic')}_new"
-        }
 
-        with mock.patch("accounts.management.commands.reconcile_blnk.BlnkClient", return_value=mock_client), \
-             mock.patch("accounts.services.BlnkClient", return_value=mock_client):
+        with mock.patch("accounts.management.commands.reconcile_blnk.BlnkClient", return_value=mock_client):
             call_command("reconcile_blnk", stdout=out)
 
         output = out.getvalue()
         self.assertIn("=== Bitfuse Blnk Reconciliation ===", output)
         self.assertIn("Status: SUCCESS", output)
+        mock_client.create_ledger.assert_not_called()
+        mock_client.create_balance.assert_not_called()
+        platform.refresh_from_db()
+        self.assertEqual(platform.ledger_id, "led-audited")
 
 
 class TradingEligibilityTests(TestCase):

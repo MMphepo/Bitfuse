@@ -25,7 +25,7 @@ class Order(models.Model):
         (UNDER_REVIEW, "Under Review"),  # buy: an admin is checking the mobile money record
         (PAYMENT_MISMATCH, "Payment Mismatch"),  # buy: payment found but does not match the order
         (PAYMENT_VERIFIED, "Payment Verified"),  # buy: payment confirmed, settlement pending
-        (SETTLING, "Settling"),  # buy: ledger settlement in progress
+        (SETTLING, "Settling"),  # buy/sell: ledger settlement in progress
         (COMPLETED, "Completed"),
         (REJECTED, "Rejected"),
         (EXPIRED, "Expired"),

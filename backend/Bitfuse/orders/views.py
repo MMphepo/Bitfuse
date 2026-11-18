@@ -1,3 +1,5 @@
+import logging
+
 from rest_framework import generics, permissions, status
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.generics import get_object_or_404
@@ -30,6 +32,8 @@ from .services import (
     submit_payment,
     verify_payment,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _require_verified_kyc(user):
@@ -151,11 +155,15 @@ class OrderDetailView(APIView):
     def get(self, request, order_id):
         order = get_object_or_404(Order, id=order_id, user=request.user)
         expire_order_if_due(order)
-        if order.status == Order.SETTLING and order.order_type == "buy":
+        if order.status == Order.SETTLING:
             try:
-                complete_buy_order(order)
+                if order.order_type == "buy":
+                    complete_buy_order(order)
+                else:
+                    complete_sell_order(order)
             except Exception:
-                pass
+                logger.exception("Could not refresh Blnk settlement for order %s.", order.reference_number)
+            order.refresh_from_db()
         return Response(OrderSerializer(order).data)
 
 
@@ -261,8 +269,11 @@ class OrderConfirmView(APIView):
                 {"detail": "Verify the mobile money payment via /verify-payment/ instead."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if order.status != Order.AWAITING_DEPOSIT:
+        if order.status not in (Order.AWAITING_DEPOSIT, Order.SETTLING):
             return Response({"detail": "Order is not awaiting confirmation."}, status=status.HTTP_400_BAD_REQUEST)
 
-        complete_sell_order(order)
+        try:
+            order = complete_sell_order(order)
+        except OrderError as exc:
+            return _error(exc)
         return Response(OrderSerializer(order).data)

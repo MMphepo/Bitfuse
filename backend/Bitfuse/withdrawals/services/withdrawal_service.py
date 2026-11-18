@@ -6,8 +6,7 @@ from django.conf import settings
 from rest_framework.exceptions import PermissionDenied
 
 from accounts.blnk_client import BlnkClient
-from accounts.models import PlatformAccount
-from accounts.services import ensure_user_wallets, fetch_wallet_balance, invalidate_wallet_balance_cache
+from accounts.services import ensure_user_wallets, fetch_wallet_balance, get_platform_account, invalidate_wallet_balance_cache
 from decouple import config
 
 from withdrawals.models import Withdrawal, WithdrawalConfig, WithdrawalNetworkConfig, WithdrawalAddress
@@ -143,14 +142,8 @@ def initiate_withdrawal(user, asset: str, network: str, amount: Decimal, destina
     if available_usdt < amount:
         raise WithdrawalError(f"Insufficient USDT balance. Available: {available_usdt} USDT, Required: {amount} USDT.")
 
-    platform = PlatformAccount.objects.first()
-    if not platform:
-        raise RuntimeError("PlatformAccount not found. Run: python manage.py init_platform_account")
-
-    if not platform.usdt_frozen_balance_id:
-        raise RuntimeError("Platform USDT frozen balance ID is not initialized in PlatformAccount.")
-
     blnk_client = BlnkClient()
+    platform = get_platform_account(client=blnk_client)
     precision_usdt = settings.CURRENCY_PRECISION["USDT"]
     raw_amount = int(amount * precision_usdt)
 
@@ -276,12 +269,9 @@ def monitor_broadcast_withdrawals() -> int:
     broadcast_txs = Withdrawal.objects.filter(status="BROADCAST")
     processed_count = 0
 
-    platform = PlatformAccount.objects.first()
-    if not platform:
-        logger.error("PlatformAccount not configured.")
-        return 0
-
     blnk_client = BlnkClient()
+    platform = get_platform_account(client=blnk_client)
+
     precision_usdt = settings.CURRENCY_PRECISION["USDT"]
 
     for w in broadcast_txs:

@@ -3,14 +3,14 @@ from accounts.services import get_or_create_platform_account
 
 
 class Command(BaseCommand):
-    help = "Creates or repairs the platform's Blnk ledger and float/contra/frozen balances."
+    help = "Initializes the platform's Blnk ledger and balances, or validates the existing mapping."
 
     def handle(self, *args, **kwargs):
         try:
             platform = get_or_create_platform_account()
             self.stdout.write(
                 self.style.SUCCESS(
-                    f"Platform account initialized/reconciled cleanly. Ledger ID: {platform.ledger_id}"
+                    f"Platform account initialized and validated. Ledger ID: {platform.ledger_id}"
                 )
             )
         except Exception as exc:

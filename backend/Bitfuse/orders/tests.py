@@ -10,7 +10,7 @@ from rest_framework.test import APIClient
 
 from accounts.models import Notification, PlatformAccount, Rate, Transaction, Wallet
 from .models import Order, OrderAuditLog, OrderSettlement
-from .services import OrderError, submit_payment, verify_payment
+from .services import OrderError, complete_sell_order, submit_payment, verify_payment
 
 User = get_user_model()
 
@@ -92,7 +92,12 @@ class BuyPaymentFlowTests(TestCase):
     @mock.patch("accounts.email_notifications.send_mail")
     @mock.patch("orders.serializers.lock_sell_order")
     @mock.patch("orders.serializers.fetch_wallet_balance", return_value={"USDT": Decimal("100")})
-    def test_sell_order_sends_admin_notification(self, _balance, _lock_order, send_mail):
+    @mock.patch("orders.serializers.ensure_user_wallets")
+    def test_sell_order_sends_admin_notification(self, ensure_wallets, _balance, _lock_order, send_mail):
+        ensure_wallets.return_value = (
+            Wallet.objects.get(user=self.user, currency="MWK"),
+            Wallet.objects.get(user=self.user, currency="USDT"),
+        )
         with self.captureOnCommitCallbacks(execute=True):
             response = self.client.post(
                 reverse("order-sell"),
@@ -321,6 +326,58 @@ class BuyPaymentFlowTests(TestCase):
         self.blnk.return_value.get_transaction.return_value = {"status": "APPLIED"}
         response = self.client.get(reverse("order-detail", args=[order.id]))
         self.assertEqual(response.status_code, 200)
+
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.COMPLETED)
+
+    def test_buy_order_waits_for_both_blnk_legs(self):
+        order = self.create_order()
+        submit_payment(order, self.user, "CM123456789")
+
+        self.blnk.return_value.create_transaction.side_effect = [
+            {"transaction_id": "blnk-1", "status": "APPLIED"},
+            {"transaction_id": "blnk-2", "status": "QUEUED"},
+        ]
+        self.blnk.return_value.get_transaction.return_value = {"status": "QUEUED"}
+
+        verify_payment(order, self.admin)
+
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.SETTLING)
+        self.assertFalse(Transaction.objects.filter(reference=order.reference_number).exists())
+
+    def test_sell_order_waits_for_both_blnk_legs(self):
+        order = Order.objects.create(
+            reference_number="BF-SELL-SETTLE",
+            user=self.user,
+            order_type="sell",
+            mwk_amount=Decimal("1000.00"),
+            usdt_amount=Decimal("1.000000"),
+            rate=Decimal("1000.00"),
+            fee_percent=Decimal("1.00"),
+            fee_amount=Decimal("10.00"),
+            payment_method="airtel_money",
+            phone=self.user.phone_number,
+            status=Order.AWAITING_DEPOSIT,
+        )
+        self.blnk.return_value.create_transaction.side_effect = [
+            {"transaction_id": "sell-leg-1", "status": "APPLIED"},
+            {"transaction_id": "sell-leg-2", "status": "QUEUED"},
+        ]
+        self.blnk.return_value.get_transaction.return_value = {"status": "QUEUED"}
+
+        complete_sell_order(order)
+
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.SETTLING)
+        self.assertEqual(order.blnk_transaction_refs, ["sell-leg-1", "sell-leg-2"])
+        self.assertFalse(Transaction.objects.filter(reference=order.reference_number).exists())
+
+        self.blnk.return_value.get_transaction.side_effect = [
+            {"status": "APPLIED"},
+            {"status": "APPLIED"},
+        ]
+        complete_sell_order(order)
 
         order.refresh_from_db()
         self.assertEqual(order.status, Order.COMPLETED)
